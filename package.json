@@ -1,0 +1,75 @@
+{
+  "name": "pi-skill-hub",
+  "version": "0.1.0",
+  "description": "Safe provenance-aware Pi skill discovery, inventory, preview, and management hub.",
+  "type": "module",
+  "main": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "files": [
+    "index.ts",
+    "src",
+    "config.json",
+    "config/config.example.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-coding-agent",
+    "skills",
+    "provenance",
+    "pi",
+    "pi-tui",
+    "skill-management",
+    "skill-discovery",
+    "inventory",
+    "preview-first"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build --silent && node --test dist/tests/*.test.js",
+    "check": "npm run lint && npm run test",
+    "package:dry-run": "npm pack --dry-run",
+    "prepublishOnly": "npm run check"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.49"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.70.5",
+    "@mariozechner/pi-tui": "^0.70.5"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.70.5",
+    "@mariozechner/pi-tui": "^0.70.5",
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.3"
+  },
+  "author": "MasuRii",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MasuRii/pi-skill-hub.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MasuRii/pi-skill-hub/issues"
+  },
+  "homepage": "https://github.com/MasuRii/pi-skill-hub#readme",
+  "publishConfig": {
+    "access": "public"
+  }
+}

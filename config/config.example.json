@@ -1,0 +1,9 @@
+{
+  "debug": false,
+  "providers": {
+    "skillsSh": true,
+    "skillsMp": true
+  },
+  "maxSearchResults": 20,
+  "requestTimeoutMs": 10000
+}
