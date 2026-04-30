@@ -15,8 +15,16 @@ export function fixtureConfig(localRoot: string, externalRoot: string): SkillHub
     localSkillRoot: localRoot,
     externalSkillRoots: [externalRoot],
     providers: { skillsSh: true, skillsMp: false },
+    skillsSh: {
+      apiBaseUrl: "https://skills.sh",
+      downloadBaseUrl: "https://skills.sh",
+      detailBaseUrl: "https://skills.sh",
+      transport: "api",
+      cliCompatibility: false,
+    },
     maxSearchResults: 10,
     requestTimeoutMs: 1000,
     updateStagingRoot: join(localRoot, "..", "staging"),
+    apiKeys: {},
   };
 }

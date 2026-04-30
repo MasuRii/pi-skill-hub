@@ -6,30 +6,21 @@ import type {
   SkillPreviewMetadata,
   SkillSearchResult,
 } from "../types.js";
+import { parseSkillsShReference, parseSkillsShUrl, skillsShDetailUrl, type SkillsShSource } from "../providers/skills-sh-identifiers.js";
+import { extractSkillsShMarkdownFromPayload, parseSkillsShJsonObject, skillsShDownloadUrl } from "../providers/skills-sh-download.js";
+import { githubRequestHeaders } from "../utils/github-http.js";
+import { parseGithubSourceUrl, rawGithubSkillMarkdownUrl, type GithubSource } from "../utils/source-reference.js";
 import { sanitizeTerminalText } from "../utils/terminal-text.js";
 
 const USER_AGENT = "pi-skill-hub/0.1.0";
-const SAFE_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/u;
 const PREVIEW_TIMEOUT_MS = 8_000;
 const AUDIT_LABELS = ["Agent Trust Hub", "Socket", "Snyk"] as const;
-
-interface SkillsShSource {
-  owner: string;
-  repo: string;
-  skill: string;
-}
-
-interface GithubSkillMarkdownSource {
-  owner: string;
-  repo: string;
-  branch: string;
-  skillPath: string[];
-}
 
 interface PreviewHttpRequest {
   url: URL;
   accept: string;
   timeoutMs: number;
+  githubApiKey?: string | undefined;
 }
 
 interface PreviewHttpResponse {
@@ -38,18 +29,6 @@ interface PreviewHttpResponse {
 }
 
 export type PreviewHttpClient = (request: PreviewHttpRequest) => Promise<PreviewHttpResponse>;
-
-interface SkillsShDownloadFile {
-  path?: string;
-  name?: string;
-  contents?: string;
-  content?: string;
-  data?: string;
-}
-
-interface SkillsShDownloadPayload {
-  files?: SkillsShDownloadFile[];
-}
 
 function parseCompactNumber(value: string): number | undefined {
   const normalized = value.trim().replace(/,/gu, "").toUpperCase();
@@ -66,12 +45,13 @@ function parseCompactNumber(value: string): number | undefined {
 }
 
 function metadataStatus(metadata: Omit<SkillPreviewMetadata, "status">): SkillPreviewMetadata["status"] {
+  const hasWeeklyInstalls = metadata.weeklyInstalls !== undefined;
   const hasStars = metadata.githubStars !== undefined;
   const hasAudits = metadata.securityAudits.length > 0;
-  if (hasStars && hasAudits) {
+  if (hasWeeklyInstalls && hasStars && hasAudits) {
     return "available";
   }
-  if (hasStars || hasAudits) {
+  if (hasWeeklyInstalls || hasStars || hasAudits) {
     return "partial";
   }
   return "unavailable";
@@ -88,95 +68,22 @@ function unavailableMetadata(skill: SkillSearchResult): SkillPreviewMetadata {
 function metadataPreview(skill: SkillSearchResult, limitation: string, metadata = unavailableMetadata(skill)): SkillContentPreview {
   const source = skill.sourceUrl ? `\nSource: ${skill.sourceUrl}` : "";
   const github = skill.githubUrl && skill.githubUrl !== skill.sourceUrl ? `\nGitHub: ${skill.githubUrl}` : "";
+  const popularity = metadata.weeklyInstalls ?? skill.popularity;
   return {
     title: skill.name,
-    body: `${skill.description}\n\nProvider: ${skill.provider}\nPopularity: ${String(skill.popularity)}${source}${github}`,
+    body: `${skill.description}\n\nProvider: ${skill.provider}\nPopularity: ${String(popularity)}${source}${github}`,
     source: "metadata",
     limitation,
     metadata,
   };
 }
 
-function safeSegments(...segments: string[]): boolean {
-  return segments.every((segment) => segment.length > 0 && segment !== "." && segment !== ".." && SAFE_SEGMENT_PATTERN.test(segment));
-}
-
-function sourceFromIdentifier(identifier: string): SkillsShSource | undefined {
-  const identifierParts = identifier.split("@");
-  if (identifierParts.length !== 2) {
-    return undefined;
-  }
-  const [repoPart, skill] = identifierParts;
-  const repoParts = repoPart?.split("/") ?? [];
-  if (repoParts.length !== 2) {
-    return undefined;
-  }
-  const [owner, repo] = repoParts;
-  if (!owner || !repo || !skill || !safeSegments(owner, repo, skill)) {
-    return undefined;
-  }
-  return { owner, repo, skill };
-}
-
-function sourceFromUrl(urlValue: string | undefined): SkillsShSource | undefined {
-  if (!urlValue) {
-    return undefined;
-  }
-  try {
-    const url = new URL(urlValue);
-    if (url.protocol !== "https:" || url.hostname !== "skills.sh") {
-      return undefined;
-    }
-    const pathSegments = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
-    if (pathSegments.length !== 3) {
-      return undefined;
-    }
-    const [owner, repo, skill] = pathSegments;
-    if (!owner || !repo || !skill || !safeSegments(owner, repo, skill)) {
-      return undefined;
-    }
-    return { owner, repo, skill };
-  } catch {
-    return undefined;
-  }
-}
-
 function parseSkillsShSource(skill: SkillSearchResult): SkillsShSource | undefined {
-  return sourceFromIdentifier(skill.id) ?? sourceFromUrl(skill.sourceUrl);
-}
-
-function parseGithubTreeSkillSource(urlValue: string | undefined): GithubSkillMarkdownSource | undefined {
-  if (!urlValue) {
-    return undefined;
-  }
-
-  try {
-    const url = new URL(urlValue);
-    if (url.protocol !== "https:" || url.hostname !== "github.com") {
-      return undefined;
-    }
-
-    const [owner, repoWithSuffix, treeSegment, branch, ...skillPath] = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
-    const repo = repoWithSuffix?.replace(/\.git$/u, "");
-    if (treeSegment !== "tree" || !owner || !repo || !branch || !safeSegments(owner, repo, branch, ...skillPath)) {
-      return undefined;
-    }
-
-    return { owner, repo, branch, skillPath };
-  } catch {
-    return undefined;
-  }
-}
-
-function rawGithubSkillMarkdownUrl(source: GithubSkillMarkdownSource): URL {
-  const encodedPath = [...source.skillPath, "SKILL.md"].map(encodeURIComponent).join("/");
-  return new URL(
-    `https://raw.githubusercontent.com/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/${encodeURIComponent(source.branch)}/${encodedPath}`,
-  );
+  return parseSkillsShReference(skill.installReference) ?? parseSkillsShReference(skill.id) ?? parseSkillsShUrl(skill.sourceUrl);
 }
 
 function canonicalSkillsShDetailUrl(source: SkillsShSource): URL {
-  return new URL(`https://skills.sh/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/${encodeURIComponent(source.skill)}`);
+  return new URL(skillsShDetailUrl(source));
 }
 
 function defaultHttpClient(requestOptions: PreviewHttpRequest): Promise<PreviewHttpResponse> {
@@ -185,10 +92,7 @@ function defaultHttpClient(requestOptions: PreviewHttpRequest): Promise<PreviewH
       requestOptions.url,
       {
         method: "GET",
-        headers: {
-          accept: requestOptions.accept,
-          "user-agent": USER_AGENT,
-        },
+        headers: githubRequestHeaders(requestOptions.url, requestOptions.accept, USER_AGENT, requestOptions.githubApiKey),
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -204,6 +108,10 @@ function defaultHttpClient(requestOptions: PreviewHttpRequest): Promise<PreviewH
     req.on("error", reject);
     req.end();
   });
+}
+
+export function createPreviewHttpClient(githubApiKey?: string | undefined): PreviewHttpClient {
+  return (requestOptions) => defaultHttpClient({ ...requestOptions, githubApiKey });
 }
 
 async function requestOptionalText(url: URL, accept: string, httpClient: PreviewHttpClient): Promise<string | undefined> {
@@ -227,46 +135,106 @@ function parseJsonObject(text: string): Record<string, unknown> | undefined {
   }
 }
 
-function fileContent(file: SkillsShDownloadFile): string | undefined {
-  if (typeof file.contents === "string") {
-    return file.contents;
+async function fetchSkillsShDownloadMarkdown(source: SkillsShSource, httpClient: PreviewHttpClient): Promise<string | undefined> {
+  const text = await requestOptionalText(skillsShDownloadUrl(source), "application/json", httpClient);
+  if (!text) {
+    return undefined;
   }
-  if (typeof file.content === "string") {
-    return file.content;
+  try {
+    return extractSkillsShMarkdownFromPayload(parseSkillsShJsonObject(text, `preview ${source.owner}/${source.repo}@${source.skill}`), source);
+  } catch {
+    return undefined;
   }
-  if (typeof file.data === "string") {
-    return file.data;
+}
+
+async function fetchSkillsShDetailHtml(source: SkillsShSource, httpClient: PreviewHttpClient): Promise<string | undefined> {
+  return requestOptionalText(canonicalSkillsShDetailUrl(source), "text/html, */*;q=0.8", httpClient);
+}
+
+function extractBalancedDiv(html: string, startIndex: number): string | undefined {
+  let depth = 0;
+  const tagPattern = /<\/?div\b[^>]*>/giu;
+  tagPattern.lastIndex = startIndex;
+  let start = -1;
+  let match: RegExpExecArray | null;
+  while ((match = tagPattern.exec(html)) !== null) {
+    const tag = match[0];
+    const index = match.index;
+    if (!tag.startsWith("</")) {
+      if (start < 0) {
+        start = index;
+      }
+      depth += 1;
+      continue;
+    }
+    depth -= 1;
+    if (start >= 0 && depth === 0) {
+      return html.slice(start, index + tag.length);
+    }
   }
   return undefined;
 }
 
-function isSkillMarkdownFile(file: SkillsShDownloadFile): boolean {
-  const pathValue = file.path ?? file.name;
-  const fileName = pathValue?.split(/[\\/]/u).pop()?.toLowerCase();
-  return fileName === "skill.md";
+function markdownTextFromInlineHtml(html: string): string {
+  return visibleTextFromHtml(html).trim();
 }
 
-function extractSkillMarkdown(payload: unknown): string | undefined {
-  const download = payload && typeof payload === "object" ? (payload as SkillsShDownloadPayload) : undefined;
-  const files = Array.isArray(download?.files) ? download.files : [];
-  const skillFile = files.find(isSkillMarkdownFile);
-  const content = skillFile ? fileContent(skillFile) : undefined;
-  return content && content.trim().length > 0 ? content : undefined;
+function htmlFragmentToMarkdown(fragment: string): string {
+  const codeBlocks: string[] = [];
+  let markdown = fragment
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/giu, " ")
+    .replace(/<pre\b[^>]*>[\s\S]*?<\/pre>/giu, (block) => {
+      const code = decodeEntities(
+        block
+          .replace(/<span\b[^>]*class="[^"]*code-line[^"]*"[^>]*>/giu, "")
+          .replace(/<\/span>/giu, "\n")
+          .replace(/<br\s*\/?\s*>/giu, "\n")
+          .replace(/<[^>]+>/gu, ""),
+      ).replace(/\n{3,}/gu, "\n\n").trim();
+      const token = `\n\n@@PI_SKILL_HUB_CODE_BLOCK_${String(codeBlocks.length)}@@\n\n`;
+      codeBlocks.push(`\n\n\`\`\`\n${code}\n\`\`\`\n\n`);
+      return token;
+    })
+    .replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/giu, (_match, level: string, body: string) => `\n\n${"#".repeat(Number.parseInt(level, 10))} ${markdownTextFromInlineHtml(body)}\n\n`)
+    .replace(/<li\b[^>]*>([\s\S]*?)<\/li>/giu, (_match, body: string) => `\n- ${markdownTextFromInlineHtml(body)}\n`)
+    .replace(/<p\b[^>]*>([\s\S]*?)<\/p>/giu, (_match, body: string) => `\n\n${markdownTextFromInlineHtml(body)}\n\n`)
+    .replace(/<br\s*\/?\s*>/giu, "\n")
+    .replace(/<[^>]+>/gu, " ");
+
+  markdown = decodeEntities(markdown);
+  for (const [index, code] of codeBlocks.entries()) {
+    markdown = markdown.replace(`@@PI_SKILL_HUB_CODE_BLOCK_${String(index)}@@`, code);
+  }
+  return markdown
+    .split(/\r?\n/u)
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
 }
 
-async function fetchSkillsShMarkdown(source: SkillsShSource, httpClient: PreviewHttpClient): Promise<string | undefined> {
-  const url = new URL(
-    `https://skills.sh/api/download/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/${encodeURIComponent(source.skill)}`,
-  );
-  const text = await requestOptionalText(url, "application/json", httpClient);
-  if (!text) {
+export function extractSkillsShRenderedMarkdown(html: string): string | undefined {
+  const markerIndex = html.indexOf("SKILL.md");
+  if (markerIndex < 0) {
     return undefined;
   }
-  return extractSkillMarkdown(parseJsonObject(text));
+  const proseMatch = /<div\b[^>]*class="[^"]*\bprose\b[^"]*"[^>]*>/iu.exec(html.slice(markerIndex));
+  if (!proseMatch || proseMatch.index === undefined) {
+    return undefined;
+  }
+  const startIndex = markerIndex + proseMatch.index;
+  const fragment = extractBalancedDiv(html, startIndex);
+  const markdown = fragment ? htmlFragmentToMarkdown(fragment) : undefined;
+  return markdown && markdown.length > 0 ? markdown : undefined;
 }
 
-async function fetchGithubSkillMarkdown(source: GithubSkillMarkdownSource, httpClient: PreviewHttpClient): Promise<string | undefined> {
-  const text = await requestOptionalText(rawGithubSkillMarkdownUrl(source), "text/markdown, text/plain;q=0.9, */*;q=0.8", httpClient);
+async function fetchGithubSkillMarkdown(source: GithubSource, httpClient: PreviewHttpClient): Promise<string | undefined> {
+  const url = rawGithubSkillMarkdownUrl(source);
+  if (!url) {
+    return undefined;
+  }
+  const text = await requestOptionalText(url, "text/markdown, text/plain;q=0.9, */*;q=0.8", httpClient);
   return text && text.trim().length > 0 ? text : undefined;
 }
 
@@ -284,9 +252,23 @@ function visibleTextFromHtml(html: string): string {
   return decodeEntities(html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, " ").replace(/<style\b[^>]*>[\s\S]*?<\/style>/giu, " ").replace(/<[^>]+>/gu, " ")).replace(/\s+/gu, " ").trim();
 }
 
+function parseLabeledCompactNumber(text: string, labelPattern: string): number | undefined {
+  const pattern = new RegExp(`${labelPattern}\\s*[:\\-]?\\s*([\\d,.]+\\s*[KMB]?)`, "iu");
+  const match = text.match(pattern);
+  return match?.[1] ? parseCompactNumber(match[1].replace(/\s+/gu, "")) : undefined;
+}
+
+export function parseWeeklyInstallsFromText(text: string): number | undefined {
+  return parseLabeledCompactNumber(text, "weekly\\s+installs?");
+}
+
 export function parseGithubStarsFromText(text: string): number | undefined {
+  const labeledStars = parseLabeledCompactNumber(text, "github\\s+stars?");
+  if (labeledStars !== undefined) {
+    return labeledStars;
+  }
+
   const patterns = [
-    /github\s+stars?\s*[:\-]?\s*([\d,.]+\s*[KMB]?)/iu,
     /([\d,.]+\s*[KMB]?)\s*(?:github\s+)?stars?\b/iu,
     /stargazers_count["'\s:]+([\d,.]+)/iu,
   ];
@@ -334,6 +316,7 @@ export function parseSkillsShRenderedMetadata(html: string, provider: SkillSearc
   const text = visibleTextFromHtml(html);
   return createPreviewMetadata({
     provider,
+    weeklyInstalls: parseWeeklyInstallsFromText(text),
     githubStars: parseGithubStarsFromText(text),
     securityAudits: parseSecurityAuditsFromText(text),
   });
@@ -353,13 +336,13 @@ async function fetchGithubStars(source: SkillsShSource, httpClient: PreviewHttpC
   return typeof stars === "number" && Number.isFinite(stars) ? stars : undefined;
 }
 
-async function fetchSkillsShMetadata(
+async function buildSkillsShMetadata(
   skill: SkillSearchResult,
   source: SkillsShSource,
+  detailHtml: string | undefined,
   httpClient: PreviewHttpClient,
 ): Promise<SkillPreviewMetadata> {
-  const html = await requestOptionalText(canonicalSkillsShDetailUrl(source), "text/html, */*;q=0.8", httpClient);
-  const renderedMetadata = html ? parseSkillsShRenderedMetadata(html, skill.provider) : unavailableMetadata(skill);
+  const renderedMetadata = detailHtml ? parseSkillsShRenderedMetadata(detailHtml, skill.provider) : unavailableMetadata(skill);
   if (renderedMetadata.githubStars !== undefined) {
     return renderedMetadata;
   }
@@ -367,6 +350,7 @@ async function fetchSkillsShMetadata(
   const githubStars = await fetchGithubStars(source, httpClient);
   return createPreviewMetadata({
     provider: skill.provider,
+    weeklyInstalls: renderedMetadata.weeklyInstalls,
     githubStars,
     securityAudits: renderedMetadata.securityAudits,
   });
@@ -383,13 +367,15 @@ export async function buildRemotePreview(skill: SkillSearchResult, httpClient: P
       return buildMetadataPreview(skill);
     }
 
-    const [markdown, metadata] = await Promise.all([
-      fetchSkillsShMarkdown(source, httpClient),
-      fetchSkillsShMetadata(skill, source, httpClient),
+    const [downloadMarkdown, detailHtml] = await Promise.all([
+      fetchSkillsShDownloadMarkdown(source, httpClient),
+      fetchSkillsShDetailHtml(source, httpClient),
     ]);
+    const metadata = await buildSkillsShMetadata(skill, source, detailHtml, httpClient);
+    const markdown = downloadMarkdown ?? (detailHtml ? extractSkillsShRenderedMarkdown(detailHtml) : undefined);
 
     if (!markdown) {
-      return metadataPreview(skill, "Remote SKILL.md was unavailable from skills.sh; showing provider metadata instead.", metadata);
+      return metadataPreview(skill, "Remote SKILL.md was unavailable from skills.sh download and rendered detail sources; showing provider metadata instead.", metadata);
     }
 
     return {
@@ -400,8 +386,8 @@ export async function buildRemotePreview(skill: SkillSearchResult, httpClient: P
     };
   }
 
-  if (skill.provider === "skillsmp") {
-    const source = parseGithubTreeSkillSource(skill.githubUrl);
+  if (skill.provider === "skillsmp" || skill.provider === "github") {
+    const source = parseGithubSourceUrl(skill.githubUrl) ?? parseGithubSourceUrl(skill.sourceUrl);
     if (!source) {
       return buildMetadataPreview(skill);
     }
@@ -427,11 +413,12 @@ function formatAuditStatus(audit: SkillPreviewAudit): string {
 }
 
 export function formatPreviewMetadataTags(metadata: SkillPreviewMetadata): string {
+  const weeklyInstalls = metadata.weeklyInstalls === undefined ? "Weekly installs: unavailable" : `Weekly installs: ${String(metadata.weeklyInstalls)}`;
   const stars = metadata.githubStars === undefined ? "GitHub stars: unavailable" : `GitHub stars: ${String(metadata.githubStars)}`;
   const audits = metadata.securityAudits.length > 0
     ? `Security audits: ${metadata.securityAudits.map(formatAuditStatus).join(", ")}`
     : "Security audits: unavailable";
-  return [`Provider: ${metadata.provider}`, stars, audits, `Metadata: ${metadata.status}`].join(" | ");
+  return [`Provider: ${metadata.provider}`, weeklyInstalls, stars, audits, `Metadata: ${metadata.status}`].join(" | ");
 }
 
 export function formatPreview(preview: SkillContentPreview): string {

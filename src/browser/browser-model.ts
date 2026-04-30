@@ -63,7 +63,7 @@ export function clampBrowserPageIndex(pageIndex: number, resultCount: number, pa
   return Math.max(0, Math.min(pageIndex, browserPageCount(resultCount, pageSize) - 1));
 }
 
-export function pagedBrowserResults(results: readonly SkillSearchResult[], pageIndex: number, pageSize: number): SkillSearchResult[] {
+export function pagedBrowserResults<T>(results: readonly T[], pageIndex: number, pageSize: number): T[] {
   const safePageSize = Math.max(1, pageSize);
   const safePageIndex = clampBrowserPageIndex(pageIndex, results.length, safePageSize);
   const start = safePageIndex * safePageSize;

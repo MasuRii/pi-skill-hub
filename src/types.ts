@@ -1,11 +1,12 @@
-export type ProviderId = "skills-sh" | "skillsmp";
+export type CatalogProviderId = "skills-sh" | "skillsmp";
+export type ProviderId = CatalogProviderId | "github";
 export type SearchMode = "keyword" | "ai";
 export type SkillRootType = "local" | "external";
 export type SkillClassification = "managed" | "adopted" | "unknown" | "external" | "missing";
 export type DriftStatus = "clean" | "drifted" | "missing" | "untracked" | "external";
 export type ProvenanceKind = "installed" | "adopted";
 export type BrowserSortMode = "relevance" | "popularity" | "name" | "provider";
-export type BrowserProviderFilter = "all" | ProviderId;
+export type BrowserProviderFilter = "all" | CatalogProviderId;
 export type UpdateStatus = "available" | "current" | "unknown" | "blocked";
 
 export interface SkillSearchResult {
@@ -17,12 +18,15 @@ export interface SkillSearchResult {
   provider: ProviderId;
   sourceUrl?: string | undefined;
   githubUrl?: string | undefined;
+  sourceOwner?: string | undefined;
+  sourceRepository?: string | undefined;
+  sourcePath?: string | undefined;
   installHint?: string | undefined;
   installReference?: string | undefined;
 }
 
 export interface ProviderSearchSummary {
-  provider: ProviderId;
+  provider: CatalogProviderId;
   count: number;
   error?: string | undefined;
 }
@@ -48,6 +52,13 @@ export interface ProvenanceEntry {
   provider?: ProviderId | undefined;
   sourceId?: string | undefined;
   sourceUrl?: string | undefined;
+  sourceOwner?: string | undefined;
+  sourceRepository?: string | undefined;
+  sourcePath?: string | undefined;
+  sourceType?: string | undefined;
+  ref?: string | undefined;
+  skillPath?: string | undefined;
+  sourceTransport?: string | undefined;
   installedAt: string;
   updatedAt: string;
   fingerprint: SkillFingerprint;
@@ -93,6 +104,7 @@ export interface SkillPreviewAudit {
 
 export interface SkillPreviewMetadata {
   provider: ProviderId;
+  weeklyInstalls?: number | undefined;
   githubStars?: number | undefined;
   securityAudits: SkillPreviewAudit[];
   status: SkillPreviewMetadataStatus;
@@ -136,7 +148,7 @@ export interface StagedProviderContent {
   diff: UpdateDiffSummary;
 }
 
-export type PlanAction = "adopt" | "install" | "update" | "remove" | "refresh";
+export type PlanAction = "adopt" | "install" | "update" | "remove" | "refresh" | "bind_source";
 export type PlanOperationKind = "write_manifest" | "run_command" | "delete_directory" | "scan_inventory" | "stage_content" | "replace_directory" | "skip";
 
 export interface PlanOperation {

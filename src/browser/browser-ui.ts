@@ -11,13 +11,14 @@ import {
   truncateToWidth,
 } from "@mariozechner/pi-tui";
 import type { SkillHubConfig } from "../config/config.js";
-import type { CommandRunner, ProviderSearchSummary, SkillContentPreview, SkillSearchResult } from "../types.js";
+import type { CommandRunner, InventorySnapshot, ProviderSearchSummary, SkillContentPreview, SkillSearchResult } from "../types.js";
 import { createProviders } from "../providers/index.js";
 import { createInstallDescriptor } from "../plans/install-descriptor.js";
 import { chooseSearchMode, normalizeQuery, searchAllProviders } from "../search/search.js";
 import { formatProviderErrorSummary } from "../ui/rendering.js";
 import { getErrorMessage } from "../utils/errors.js";
 import { sanitizeTerminalText } from "../utils/terminal-text.js";
+import { sourceIdentityKey } from "../utils/source-reference.js";
 import {
   browserPageCount,
   clampBrowserPageIndex,
@@ -28,8 +29,9 @@ import {
   type BrowserState,
   visibleBrowserResults,
 } from "./browser-model.js";
+import { createInstalledSkillIndex, installedSkillStatus, type InstalledSkillIndex, type InstalledSkillStatus } from "./installed-skill-index.js";
 import { MarkdownPreviewRenderer } from "./markdown-preview.js";
-import { buildMetadataPreview, buildRemotePreview, formatPreviewMetadataTags } from "./preview.js";
+import { buildMetadataPreview, buildRemotePreview, createPreviewHttpClient, formatPreviewMetadataTags } from "./preview.js";
 import { formatBrowserResultColumns, formatBrowserResultHeader } from "./result-layout.js";
 
 export type BrowserAction = { type: "install"; skill: SkillSearchResult; preview?: SkillContentPreview | undefined } | null;
@@ -40,6 +42,23 @@ export interface BrowserServices {
   config: SkillHubConfig;
   runner: CommandRunner;
   previewBuilder?: SkillPreviewBuilder | undefined;
+  inventorySnapshot?: InventorySnapshot | undefined;
+}
+
+export interface SkillBrowserSessionState {
+  state: BrowserState;
+  hasSearched: boolean;
+  providerSources: ProviderSearchSummary[];
+  selectedSkillKey: string;
+}
+
+export function createSkillBrowserSessionState(): SkillBrowserSessionState {
+  return {
+    state: createBrowserState(),
+    hasSearched: false,
+    providerSources: [],
+    selectedSkillKey: "",
+  };
 }
 
 type StatusTone = "dim" | "warning" | "error";
@@ -48,6 +67,11 @@ type BrowserViewMode = "list" | "preview";
 interface StatusLine {
   text: string;
   tone: StatusTone;
+}
+
+interface BrowserResultEntry {
+  key: string;
+  skill: SkillSearchResult;
 }
 
 interface PreviewCacheEntry {
@@ -73,8 +97,12 @@ const OVERLAY_HEIGHT_RATIO = 0.85;
 const LIST_RESERVED_ROWS = 9;
 const PREVIEW_RESERVED_ROWS = 8;
 
-function resultKey(skill: SkillSearchResult): string {
-  return `${skill.provider}:${skill.id}`;
+function resultCacheKey(skill: SkillSearchResult): string {
+  return sourceIdentityKey(skill);
+}
+
+function resultEntryKey(skill: SkillSearchResult, visibleIndex: number): string {
+  return `${resultCacheKey(skill)}#${String(visibleIndex)}`;
 }
 
 function safeTerminalRows(tui: TUI): number {
@@ -94,13 +122,14 @@ export function calculateBrowserListMaxVisible(options: BrowserListCapacityOptio
 }
 
 class SkillBrowserModal implements Component, Focusable {
-  private readonly state: BrowserState = createBrowserState();
+  private readonly state: BrowserState;
   private readonly input = new Input();
+  private readonly installedIndex: InstalledSkillIndex;
   private list: SelectList;
   private isSearching = false;
-  private hasSearched = false;
+  private hasSearched: boolean;
   private error = "";
-  private providerSources: ProviderSearchSummary[] = [];
+  private providerSources: ProviderSearchSummary[];
   private searchGeneration = 0;
   private focusedValue = false;
   private viewMode: BrowserViewMode = "list";
@@ -125,20 +154,34 @@ class SkillBrowserModal implements Component, Focusable {
     private readonly theme: Theme,
     private readonly services: BrowserServices,
     private readonly done: (action: BrowserAction) => void,
+    private readonly sessionState: SkillBrowserSessionState = createSkillBrowserSessionState(),
   ) {
+    this.state = sessionState.state;
+    this.hasSearched = sessionState.hasSearched;
+    this.providerSources = [...sessionState.providerSources];
+    this.selectedSkillKey = sessionState.selectedSkillKey;
+    this.installedIndex = createInstalledSkillIndex(services.inventorySnapshot);
     this.markdownPreviewRenderer = new MarkdownPreviewRenderer(theme);
+    this.input.setValue(this.state.query);
     this.input.onSubmit = (value) => {
       void this.search(value);
     };
     this.input.onEscape = () => this.done(null);
-    this.list = this.createList([]);
+    this.list = this.createList(this.currentPageEntries());
+    this.persistSession();
   }
 
-  private createList(skills: readonly SkillSearchResult[]): SelectList {
-    const maxVisible = Math.max(1, skills.length);
-    const items: SelectItem[] = skills.map((skill) => ({
-      value: resultKey(skill),
-      label: skill.name,
+  private persistSession(): void {
+    this.sessionState.hasSearched = this.hasSearched;
+    this.sessionState.providerSources = [...this.providerSources];
+    this.sessionState.selectedSkillKey = this.selectedSkillKey;
+  }
+
+  private createList(entries: readonly BrowserResultEntry[]): SelectList {
+    const maxVisible = Math.max(1, entries.length);
+    const items: SelectItem[] = entries.map((entry) => ({
+      value: entry.key,
+      label: entry.skill.name,
     }));
     const list = new SelectList(
       items,
@@ -157,24 +200,27 @@ class SkillBrowserModal implements Component, Focusable {
     );
     list.onSelectionChange = (item) => {
       this.selectedSkillKey = item.value;
+      this.persistSession();
     };
     list.onSelect = (item) => {
-      const skill = visibleBrowserResults(this.state).find((candidate) => resultKey(candidate) === item.value);
-      if (skill) {
+      const entry = this.allVisibleEntries().find((candidate) => candidate.key === item.value);
+      if (entry) {
         this.selectedSkillKey = item.value;
-        this.enterPreview(skill);
+        this.persistSession();
+        this.enterPreview(entry.skill);
       }
     };
     list.onCancel = () => this.done(null);
-    const selectedIndex = skills.findIndex((skill) => resultKey(skill) === this.selectedSkillKey);
+    const selectedIndex = entries.findIndex((entry) => entry.key === this.selectedSkillKey);
     if (selectedIndex >= 0) {
       list.setSelectedIndex(selectedIndex);
-    } else if (skills.length > 0) {
-      this.selectedSkillKey = resultKey(skills[0] as SkillSearchResult);
+    } else if (entries.length > 0) {
+      this.selectedSkillKey = entries[0]?.key ?? "";
       list.setSelectedIndex(0);
     } else {
       this.selectedSkillKey = "";
     }
+    this.persistSession();
     return list;
   }
 
@@ -190,14 +236,18 @@ class SkillBrowserModal implements Component, Focusable {
     return visibleBrowserResults(this.state);
   }
 
-  private currentPageResults(visibleResults = this.allVisibleResults()): SkillSearchResult[] {
-    const pageSize = this.currentPageSize(visibleResults.length);
-    this.state.pageIndex = clampBrowserPageIndex(this.state.pageIndex, visibleResults.length, pageSize);
-    return pagedBrowserResults(visibleResults, this.state.pageIndex, pageSize);
+  private allVisibleEntries(visibleResults = this.allVisibleResults()): BrowserResultEntry[] {
+    return visibleResults.map((skill, index) => ({ key: resultEntryKey(skill, index), skill }));
+  }
+
+  private currentPageEntries(visibleEntries = this.allVisibleEntries()): BrowserResultEntry[] {
+    const pageSize = this.currentPageSize(visibleEntries.length);
+    this.state.pageIndex = clampBrowserPageIndex(this.state.pageIndex, visibleEntries.length, pageSize);
+    return pagedBrowserResults(visibleEntries, this.state.pageIndex, pageSize);
   }
 
   private refreshList(): void {
-    this.list = this.createList(this.currentPageResults());
+    this.list = this.createList(this.currentPageEntries());
   }
 
   private resetPage(): void {
@@ -214,6 +264,7 @@ class SkillBrowserModal implements Component, Focusable {
     this.previewScrollOffset = 0;
     this.markdownPreviewRenderer.clear();
     this.refreshList();
+    this.persistSession();
   }
 
   private async search(value: string): Promise<void> {
@@ -234,6 +285,7 @@ class SkillBrowserModal implements Component, Focusable {
     this.isSearching = true;
     this.hasSearched = true;
     this.error = "";
+    this.persistSession();
     this.tui.requestRender();
 
     try {
@@ -249,6 +301,7 @@ class SkillBrowserModal implements Component, Focusable {
       this.state.results = result.skills;
       this.providerSources = result.sources;
       this.refreshList();
+      this.persistSession();
     } catch (error) {
       if (requestId !== this.searchGeneration) {
         return;
@@ -257,6 +310,7 @@ class SkillBrowserModal implements Component, Focusable {
       this.providerSources = [];
       this.refreshList();
       this.error = getErrorMessage(error);
+      this.persistSession();
     } finally {
       if (requestId === this.searchGeneration) {
         this.isSearching = false;
@@ -328,6 +382,9 @@ class SkillBrowserModal implements Component, Focusable {
     const page = clampBrowserPageIndex(this.state.pageIndex, visibleResults.length, pageSize) + 1;
     const paging = pageCount > 1 ? ` Page ${String(page)}/${String(pageCount)} • PgUp/PgDn browse pages.` : "";
     const lines: StatusLine[] = [{ text: `${String(visibleResults.length)} ${plural} for "${this.state.query}".${paging}`, tone: "dim" }];
+    if (visibleResults.some((skill) => this.installedStatus(skill))) {
+      lines.push({ text: "Skills with matching installed provenance sources are marked ✓ and [installed:source].", tone: "warning" });
+    }
     if (providerErrors) {
       lines.push({ text: `Some providers failed: ${providerErrors}`, tone: "warning" });
     }
@@ -342,35 +399,49 @@ class SkillBrowserModal implements Component, Focusable {
     return this.theme.fg("border", "│") + truncateToWidth(content, Math.max(1, width - 2), "…", true) + this.theme.fg("border", "│");
   }
 
-  private renderResultRow(skill: SkillSearchResult, innerWidth: number): string {
-    const selected = resultKey(skill) === this.selectedSkillKey;
+  private installedStatus(skill: SkillSearchResult): InstalledSkillStatus | undefined {
+    return installedSkillStatus(skill, this.installedIndex);
+  }
+
+  private installedDescription(skill: SkillSearchResult): string {
+    const status = this.installedStatus(skill);
+    return status ? `[installed:${status.reason}] ${skill.description}` : skill.description;
+  }
+
+  private renderResultRow(entry: BrowserResultEntry, innerWidth: number): string {
+    const skill = entry.skill;
+    const selected = entry.key === this.selectedSkillKey;
+    const installed = Boolean(this.installedStatus(skill));
     const row = formatBrowserResultColumns(
       {
-        prefix: selected ? "→ " : "  ",
+        prefix: selected ? "→ " : installed ? "✓ " : "  ",
         name: skill.name,
         provider: skill.provider,
         downloads: String(skill.popularity),
-        description: skill.description,
+        description: this.installedDescription(skill),
       },
       innerWidth,
     );
-    return selected ? this.theme.fg("accent", row) : row;
+    if (selected) {
+      return this.theme.fg("accent", row);
+    }
+    return installed ? this.theme.fg("warning", row) : row;
   }
 
   private currentPreviewSkill(): SkillSearchResult | undefined {
-    return visibleBrowserResults(this.state).find((skill) => resultKey(skill) === this.selectedSkillKey);
+    return this.allVisibleEntries().find((entry) => entry.key === this.selectedSkillKey)?.skill;
   }
 
   private previewBuilder(): SkillPreviewBuilder {
-    return this.services.previewBuilder ?? buildRemotePreview;
+    return this.services.previewBuilder ?? ((skill) => buildRemotePreview(skill, createPreviewHttpClient(this.services.config.apiKeys.github)));
   }
 
   private previewEntry(skill: SkillSearchResult): PreviewCacheEntry | undefined {
-    return this.previewCache.get(resultKey(skill));
+    return this.previewCache.get(resultCacheKey(skill));
   }
 
   private startPreviewLoad(skill: SkillSearchResult): void {
-    const key = resultKey(skill);
+    const key = resultCacheKey(skill);
     const existing = this.previewCache.get(key);
     if (existing?.status === "ready" || existing?.status === "loading") {
       return;
@@ -401,7 +472,6 @@ class SkillBrowserModal implements Component, Focusable {
   }
 
   private enterPreview(skill: SkillSearchResult): void {
-    this.selectedSkillKey = resultKey(skill);
     this.viewMode = "preview";
     this.input.focused = false;
     this.previewScrollOffset = 0;
@@ -431,10 +501,14 @@ class SkillBrowserModal implements Component, Focusable {
     const maxOverlayRows = Math.max(1, Math.floor(safeTerminalRows(this.tui) * OVERLAY_HEIGHT_RATIO));
     const maxRows = Math.max(1, maxOverlayRows - PREVIEW_RESERVED_ROWS);
 
+    const installed = this.installedStatus(skill);
+    const installedRows = installed ? [`Installed: yes (${installed.reason} match)`] : [];
+
     if (!preview) {
       const rows = [
         `Name: ${descriptor.displayName}`,
         `Install reference: ${descriptor.installReference}`,
+        ...installedRows,
         "",
         "Loading remote SKILL.md preview and metadata...",
       ];
@@ -448,13 +522,14 @@ class SkillBrowserModal implements Component, Focusable {
     const headerRows = [
       `Name: ${descriptor.displayName}`,
       `Install reference: ${descriptor.installReference}`,
+      ...installedRows,
       `Source: ${preview.source}`,
       formatPreviewMetadataTags(preview.metadata),
       ...(preview.limitation ? [`Limitation: ${preview.limitation}`] : []),
       "",
     ];
     const bodyWidth = Math.max(1, innerWidth - 1);
-    const bodyRows = this.markdownPreviewRenderer.renderBody(resultKey(skill), preview.body, bodyWidth);
+    const bodyRows = this.markdownPreviewRenderer.renderBody(resultCacheKey(skill), preview.body, bodyWidth);
     const minimumBodyRows = bodyRows.length > 0 ? 1 : 0;
     const visibleHeaderRows = headerRows.slice(0, Math.max(0, maxRows - minimumBodyRows));
     const bodyHeight = Math.max(0, maxRows - visibleHeaderRows.length);
@@ -499,18 +574,18 @@ class SkillBrowserModal implements Component, Focusable {
   }
 
   private changePage(delta: number): void {
-    const visibleResults = this.allVisibleResults();
-    if (visibleResults.length === 0) {
+    const visibleEntries = this.allVisibleEntries();
+    if (visibleEntries.length === 0) {
       return;
     }
-    const pageSize = this.currentPageSize(visibleResults.length);
-    const nextPage = clampBrowserPageIndex(this.state.pageIndex + delta, visibleResults.length, pageSize);
+    const pageSize = this.currentPageSize(visibleEntries.length);
+    const nextPage = clampBrowserPageIndex(this.state.pageIndex + delta, visibleEntries.length, pageSize);
     if (nextPage === this.state.pageIndex) {
       return;
     }
     this.state.pageIndex = nextPage;
-    const pageResults = this.currentPageResults(visibleResults);
-    this.selectedSkillKey = pageResults[0] ? resultKey(pageResults[0]) : "";
+    const pageEntries = this.currentPageEntries(visibleEntries);
+    this.selectedSkillKey = pageEntries[0]?.key ?? "";
     this.refreshList();
     this.tui.requestRender();
   }
@@ -530,7 +605,7 @@ class SkillBrowserModal implements Component, Focusable {
     const leftPad = Math.max(0, Math.floor((innerWidth - title.length) / 2));
     const rightPad = Math.max(0, innerWidth - title.length - leftPad);
     const visibleResults = this.allVisibleResults();
-    const pageResults = this.currentPageResults(visibleResults);
+    const pageEntries = this.currentPageEntries(this.allVisibleEntries(visibleResults));
     const lines: string[] = [];
     lines.push(
       this.theme.fg("border", "╭" + "─".repeat(leftPad)) +
@@ -554,8 +629,8 @@ class SkillBrowserModal implements Component, Focusable {
     } else if (!this.isSearching && visibleResults.length > 0) {
       this.refreshList();
       lines.push(this.pad(formatBrowserResultHeader(innerWidth), modalWidth));
-      for (const skill of pageResults) {
-        lines.push(this.pad(this.renderResultRow(skill, innerWidth), modalWidth));
+      for (const entry of pageEntries) {
+        lines.push(this.pad(this.renderResultRow(entry, innerWidth), modalWidth));
       }
     }
     lines.push(this.theme.fg("border", "├" + "─".repeat(innerWidth) + "┤"));
@@ -646,13 +721,18 @@ export function createSkillBrowserModal(
   theme: Theme,
   services: BrowserServices,
   done: (action: BrowserAction) => void,
+  sessionState: SkillBrowserSessionState = createSkillBrowserSessionState(),
 ): Component & Focusable {
-  return new SkillBrowserModal(tui, theme, services, done);
+  return new SkillBrowserModal(tui, theme, services, done, sessionState);
 }
 
-export async function openSkillBrowser(ctx: ExtensionCommandContext, services: BrowserServices): Promise<BrowserAction> {
+export async function openSkillBrowser(
+  ctx: ExtensionCommandContext,
+  services: BrowserServices,
+  sessionState: SkillBrowserSessionState = createSkillBrowserSessionState(),
+): Promise<BrowserAction> {
   return ctx.ui.custom<BrowserAction>(
-    (tui, theme, _keybindings, done) => createSkillBrowserModal(tui, theme, services, done),
+    (tui, theme, _keybindings, done) => createSkillBrowserModal(tui, theme, services, done, sessionState),
     {
       overlay: true,
       overlayOptions: {

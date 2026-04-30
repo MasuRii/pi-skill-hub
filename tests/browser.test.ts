@@ -2,11 +2,19 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type { Theme } from "@mariozechner/pi-coding-agent";
 import type { Component, Focusable, TUI } from "@mariozechner/pi-tui";
-import { calculateBrowserListMaxVisible, createSkillBrowserModal, type BrowserAction, type BrowserServices } from "../src/browser/browser-ui.js";
+import {
+  calculateBrowserListMaxVisible,
+  createSkillBrowserModal,
+  createSkillBrowserSessionState,
+  type BrowserAction,
+  type BrowserServices,
+  type SkillBrowserSessionState,
+} from "../src/browser/browser-ui.js";
 import { buildSkillsShFindCommand } from "../src/providers/skills-sh-provider.js";
 import {
   buildMetadataPreview,
   buildRemotePreview,
+  extractSkillsShRenderedMarkdown,
   formatPreview,
   parseSecurityAuditsFromText,
   parseSkillsShRenderedMetadata,
@@ -20,7 +28,9 @@ import {
   sortBrowserResults,
   visibleBrowserResults,
 } from "../src/browser/browser-model.js";
-import type { CommandRunnerResult, SkillSearchResult } from "../src/types.js";
+import { visibleWidth } from "@mariozechner/pi-tui";
+import { formatBrowserResultColumns } from "../src/browser/result-layout.js";
+import type { CommandRunnerResult, InventorySnapshot, SkillSearchResult } from "../src/types.js";
 
 function skill(name: string, popularity: number, provider: "skills-sh" | "skillsmp", description = `${name} helper`): SkillSearchResult {
   return {
@@ -63,6 +73,48 @@ function createTuiFixture(renderRequests: { count: number }, rows = 30): TUI {
   } as unknown as TUI;
 }
 
+function inventorySnapshotWithSkill(name: string, sourceId?: string | undefined): InventorySnapshot {
+  const localPath = `C:/tmp/pi-skill-hub/local/${name}`;
+  return {
+    localRoot: "C:/tmp/pi-skill-hub/local",
+    externalRoots: [],
+    items: [
+      {
+        name,
+        path: localPath,
+        rootType: "local",
+        classification: "managed",
+        driftStatus: "clean",
+        metadata: {
+          name,
+          description: `${name} installed locally`,
+          hasSkillFile: true,
+        },
+        ...(sourceId
+          ? {
+              manifestEntry: {
+                name,
+                localPath,
+                provenance: "installed" as const,
+                provider: "skills-sh" as const,
+                sourceId,
+                installedAt: "2026-01-01T00:00:00.000Z",
+                updatedAt: "2026-01-01T00:00:00.000Z",
+                fingerprint: {
+                  algorithm: "sha256" as const,
+                  digest: "test-digest",
+                  fileCount: 1,
+                  totalBytes: 1,
+                },
+              },
+            }
+          : {}),
+      },
+    ],
+    manifestOnlyMissing: [],
+  };
+}
+
 function browserServices(
   run: BrowserServices["runner"]["run"],
   previewBuilder: BrowserServices["previewBuilder"] = async (result) => buildMetadataPreview(result),
@@ -73,9 +125,17 @@ function browserServices(
       localSkillRoot: "C:/tmp/pi-skill-hub/local",
       externalSkillRoots: [],
       providers: { skillsSh: true, skillsMp: false },
+      skillsSh: {
+        apiBaseUrl: "https://skills.sh",
+        downloadBaseUrl: "https://skills.sh",
+        detailBaseUrl: "https://skills.sh",
+        transport: "cli",
+        cliCompatibility: true,
+      },
       maxSearchResults: 20,
       requestTimeoutMs: 1000,
       updateStagingRoot: "C:/tmp/pi-skill-hub/staging",
+      apiKeys: {},
     },
     runner: { run },
     previewBuilder,
@@ -84,10 +144,16 @@ function browserServices(
 
 function createBrowserHarness(
   services: BrowserServices,
-  options: { rows?: number; done?: (action: BrowserAction) => void; theme?: Theme } = {},
+  options: { rows?: number; done?: (action: BrowserAction) => void; theme?: Theme; session?: SkillBrowserSessionState } = {},
 ): { component: Component & Focusable; render: () => string; renderRequests: { count: number } } {
   const renderRequests = { count: 0 };
-  const component = createSkillBrowserModal(createTuiFixture(renderRequests, options.rows), options.theme ?? themeFixture(), services, options.done ?? (() => undefined));
+  const component = createSkillBrowserModal(
+    createTuiFixture(renderRequests, options.rows),
+    options.theme ?? themeFixture(),
+    services,
+    options.done ?? (() => undefined),
+    options.session,
+  );
   component.focused = true;
   return {
     component,
@@ -212,13 +278,31 @@ test("browser modal surfaces provider errors returned by aggregated search", asy
   await flushSearch();
 
   const rendered = harness.render();
-  assert.match(rendered, /Provider errors: skills-sh: skills\.sh search failed with exit code 1: simulated provider failure/u);
+  assert.match(rendered, /Provider errors: skills-sh: skills\.sh CLI compatibility search failed with exit code 1: simulated provid/u);
   assert.doesNotMatch(rendered, /No matching commands/u);
 });
 
 test("browser list capacity renders default twenty results when terminal height allows and fewer when constrained", () => {
   assert.equal(calculateBrowserListMaxVisible({ terminalRows: 40, resultCount: 24, maxSearchResults: 20 }), 20);
   assert.equal(calculateBrowserListMaxVisible({ terminalRows: 16, resultCount: 24, maxSearchResults: 20 }), 3);
+});
+
+test("browser result layout truncates plain columns without injecting ANSI resets or line breaks", () => {
+  const row = formatBrowserResultColumns(
+    {
+      prefix: "→ ",
+      name: "shopify-polaris-admin-extension-with-extra-long-name",
+      provider: "skills-sh",
+      downloads: "2061",
+      description: "Pi extension development master reference.\nUse when: building pi extensions, debugging extension behavior, or customizing Pi.",
+    },
+    96,
+  );
+
+  assert.equal(visibleWidth(row), 96);
+  assert.doesNotMatch(row, /\u001B\[[\d;]*m/u);
+  assert.doesNotMatch(row, /[\r\n\u2028\u2029]/u);
+  assert.match(row, /…/u);
 });
 
 test("browser modal renders aligned headers and up to twenty result rows when height allows", async () => {
@@ -248,7 +332,7 @@ test("browser modal renders aligned headers and up to twenty result rows when he
   assert.ok(headerLine);
   assert.ok(rowLine);
   assert.equal(headerLine.indexOf("Provider"), rowLine.indexOf("skills-sh"));
-  assert.equal(headerLine.indexOf("Downloads"), rowLine.indexOf("1", rowLine.indexOf("skills-sh")));
+  assert.equal(rowLine.indexOf("1", rowLine.indexOf("skills-sh")), headerLine.indexOf("Downloads") + "Downloads".length - 1);
 });
 
 test("browser modal pages over cached client-side results with explicit page controls", async () => {
@@ -277,6 +361,76 @@ test("browser modal pages over cached client-side results with explicit page con
   assert.match(rendered, /Page 2\/7/u);
   assert.match(rendered, /skill-17/u);
   assert.doesNotMatch(rendered, /skill-20/u);
+});
+
+test("browser session preserves search results and current page across modal recreation", async () => {
+  const results = Array.from({ length: 20 }, (_value, index) => ({
+    id: `owner/repo@skill-${String(index + 1).padStart(2, "0")}`,
+    name: `skill-${String(index + 1).padStart(2, "0")}`,
+    author: "owner",
+    description: `Skill ${String(index + 1)} description`,
+    installs: index + 1,
+  }));
+  const session = createSkillBrowserSessionState();
+  const services = browserServices(async () => ({ stdout: JSON.stringify(results), stderr: "", code: 0 }));
+  const firstHarness = createBrowserHarness(services, { rows: 16, session });
+
+  typeSearch(firstHarness.component, "skill");
+  sendInput(firstHarness.component, "\r");
+  await flushSearch();
+  sendInput(firstHarness.component, "\x1b[6~");
+  assert.match(firstHarness.render(), /Page 2\/7/u);
+
+  const reopenedHarness = createBrowserHarness(services, { rows: 16, session });
+  const rendered = reopenedHarness.render();
+  assert.match(rendered, /20 results for "skill"\. Page 2\/7/u);
+  assert.match(rendered, /skill-17/u);
+  assert.doesNotMatch(rendered, /Type a search query/u);
+});
+
+test("browser modal highlights already installed skills in search results", async () => {
+  const services = browserServices(async () => ({
+    stdout: JSON.stringify([
+      { id: "owner/repo@installed-skill", name: "installed-skill", description: "Already present", installs: 1 },
+      { id: "owner/repo@new-skill", name: "new-skill", description: "Not present", installs: 3 },
+    ]),
+    stderr: "",
+    code: 0,
+  }));
+  services.inventorySnapshot = inventorySnapshotWithSkill("installed-skill", "owner/repo@installed-skill");
+  const harness = createBrowserHarness(services);
+
+  typeSearch(harness.component, "skill");
+  sendInput(harness.component, "\r");
+  await flushSearch();
+
+  const rendered = harness.render();
+  assert.match(rendered, /matching installed provenance sources are marked ✓ and \[installed:source\]/u);
+  assert.match(rendered, /✓\s+installed-skill/u);
+  assert.match(rendered, /\[installed:source\] Already present/u);
+});
+
+test("browser modal does not highlight same-name skills from different sources as installed", async () => {
+  const services = browserServices(async () => ({
+    stdout: JSON.stringify([
+      { id: "anthropics/skills@frontend-design", name: "frontend-design", description: "Installed source", installs: 10 },
+      { id: "pbakaus/impeccable@frontend-design", name: "frontend-design", description: "Different same-name source", installs: 9 },
+    ]),
+    stderr: "",
+    code: 0,
+  }));
+  services.inventorySnapshot = inventorySnapshotWithSkill("frontend-design", "anthropics/skills@frontend-design");
+  const harness = createBrowserHarness(services);
+
+  typeSearch(harness.component, "frontend");
+  sendInput(harness.component, "\r");
+  await flushSearch();
+
+  const rendered = harness.render();
+  assert.match(rendered, /→\s+frontend-design\s+skills-sh\s+10\s+\[installed:source\] Installed source/u);
+  assert.match(rendered, /\s+frontend-design\s+skills-sh\s+9\s+Different same-name source/u);
+  assert.doesNotMatch(rendered, /\[installed:name\]/u);
+  assert.doesNotMatch(rendered, /✓\s+frontend-design\s+skills-sh\s+9\s+\[installed/u);
 });
 
 test("browser modal opens preview on first selection and only emits install action after second enter", async () => {
@@ -489,6 +643,66 @@ test("skills.sh preview fetches SKILL.md from download API and displays metadata
   ]);
 });
 
+test("skills.sh preview falls back to rendered detail SKILL.md and weekly installs when download API is unavailable", async () => {
+  const calls: string[] = [];
+  const html = `
+    <html><body>
+      <span>SKILL.md</span>
+      <div class="prose prose-invert">
+        <h1>Test-Driven Development (TDD)</h1>
+        <p>Write tests first, watch them fail, then implement minimal code to pass.</p>
+        <h2>Verification Checklist</h2>
+        <ul><li>Every new function/method has a test</li></ul>
+      </div>
+      <span>Weekly Installs</span><div>64.2K</div>
+      <span>GitHub Stars</span><div>168.5K</div>
+      <span>Agent Trust Hub Pass</span><span>Socket Pass</span><span>Snyk Pass</span>
+    </body></html>`;
+  const httpClient: PreviewHttpClient = async ({ url }) => {
+    calls.push(url.toString());
+    if (url.pathname === "/api/download/obra/superpowers/test-driven-development") {
+      return { statusCode: 429, body: JSON.stringify({ error: "rate_limit_exceeded" }) };
+    }
+    if (url.pathname === "/obra/superpowers/test-driven-development") {
+      return { statusCode: 200, body: html };
+    }
+    return { statusCode: 404, body: "" };
+  };
+
+  const preview = await buildRemotePreview(
+    {
+      ...skill("test-driven-development", 0, "skills-sh"),
+      id: "obra/superpowers@test-driven-development",
+      sourceUrl: "https://skills.sh/obra/superpowers/test-driven-development",
+    },
+    httpClient,
+  );
+  const formatted = formatPreview(preview);
+
+  assert.equal(preview.source, "remote");
+  assert.match(preview.body, /# Test-Driven Development \(TDD\)/u);
+  assert.match(preview.body, /- Every new function\/method has a test/u);
+  assert.equal(preview.metadata.weeklyInstalls, 64200);
+  assert.match(formatted, /Weekly installs: 64200/u);
+  assert.match(formatted, /GitHub stars: 168500/u);
+  assert.doesNotMatch(formatted, /Limitation:/u);
+  assert.deepEqual(calls, [
+    "https://skills.sh/api/download/obra/superpowers/test-driven-development",
+    "https://skills.sh/obra/superpowers/test-driven-development",
+  ]);
+});
+
+test("skills.sh rendered detail parser extracts markdown from the SKILL.md prose section", () => {
+  const markdown = extractSkillsShRenderedMarkdown(`
+    <section><span>Summary</span><p>Not this text</p></section>
+    <div><span>SKILL.md</span></div>
+    <div class="prose prose-invert"><h1>Skill Title</h1><p>Use the skill.</p><ul><li>First step</li></ul></div>
+    <aside><span>Weekly Installs</span><div>64.2K</div></aside>
+  `);
+
+  assert.equal(markdown, "# Skill Title\n\nUse the skill.\n\n- First step");
+});
+
 test("skills.sh preview remains compatible with legacy content payloads", async () => {
   const httpClient: PreviewHttpClient = async ({ url }) => {
     if (url.pathname === "/api/download/anthropics/skills/legacy-preview") {
@@ -625,7 +839,8 @@ test("security audit parser reports available pass and fail statuses without inv
     { label: "Socket", status: "fail" },
   ]);
 
-  const metadata = parseSkillsShRenderedMetadata("<p>GitHub stars: 999</p><p>No audits published</p>");
+  const metadata = parseSkillsShRenderedMetadata("<p>Weekly Installs 64.2K</p><p>GitHub stars: 999</p><p>No audits published</p>");
+  assert.equal(metadata.weeklyInstalls, 64200);
   assert.equal(metadata.githubStars, 999);
   assert.deepEqual(metadata.securityAudits, []);
   assert.equal(metadata.status, "partial");

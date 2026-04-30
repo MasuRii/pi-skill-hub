@@ -1,4 +1,5 @@
-import { truncateToWidth } from "@mariozechner/pi-tui";
+import { visibleWidth } from "@mariozechner/pi-tui";
+import { truncatePlainToWidth } from "../utils/terminal-width.js";
 
 export interface BrowserResultColumns {
   prefix: string;
@@ -15,18 +16,16 @@ const DOWNLOAD_COLUMN_WIDTH = 9;
 const COLUMN_GAP = 1;
 
 function normalizePrefix(prefix: string): string {
-  const truncated = truncateToWidth(prefix, PREFIX_WIDTH, "", true);
-  return truncated + " ".repeat(Math.max(0, PREFIX_WIDTH - truncated.length));
+  return truncatePlainToWidth(prefix, PREFIX_WIDTH, "", true);
 }
 
 function paddedColumn(text: string, width: number): string {
-  const truncated = truncateToWidth(text, width, "…", true);
-  return truncated + " ".repeat(Math.max(0, width - truncated.length));
+  return truncatePlainToWidth(text, width, "…", true);
 }
 
 function rightAlignedColumn(text: string, width: number): string {
-  const truncated = truncateToWidth(text, width, "…", true);
-  return " ".repeat(Math.max(0, width - truncated.length)) + truncated;
+  const truncated = truncatePlainToWidth(text, width, "…", false);
+  return " ".repeat(Math.max(0, width - visibleWidth(truncated))) + truncated;
 }
 
 export function formatBrowserResultColumns(columns: BrowserResultColumns, width: number): string {
@@ -38,9 +37,9 @@ export function formatBrowserResultColumns(columns: BrowserResultColumns, width:
     paddedColumn(columns.name, NAME_COLUMN_WIDTH),
     paddedColumn(columns.provider, PROVIDER_COLUMN_WIDTH),
     rightAlignedColumn(columns.downloads, DOWNLOAD_COLUMN_WIDTH),
-    truncateToWidth(columns.description, descriptionWidth, "…", true),
+    truncatePlainToWidth(columns.description, descriptionWidth, "…", true),
   ].join(" ");
-  return truncateToWidth(row, width, "…", true);
+  return truncatePlainToWidth(row, width, "…", true);
 }
 
 export function formatBrowserResultHeader(width: number): string {
