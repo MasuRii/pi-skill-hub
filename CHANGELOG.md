@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-30
+
+### Added
+- Added the unified `/skill-hub` modal workspace with Browse, Inventory, Install, Update, Sources, and Remove panes.
+- Added terminal-size-aware modal layout helpers for bounded workspace rendering.
+- Added installed-skill indexing, provider source discovery, and source binding flows for local inventory provenance.
+- Added GitHub, skills.sh download, and source-reference helpers for remote previews and update staging.
+
+### Changed
+- Expanded install, adopt, update, refresh, source binding, and remove planning flows with preview-first confirmation behavior.
+- Improved skills.sh and Skills Marketplace provider handling, search normalization, and result rendering.
+- Updated Pi development dependencies and expanded coverage for modal, provider, plan, discovery, configuration, GitHub, search, and update behavior.
+
 ## [0.1.0] - 2026-04-28
 
 ### Added

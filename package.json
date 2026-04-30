@@ -1,6 +1,6 @@
 {
   "name": "pi-skill-hub",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Safe provenance-aware Pi skill discovery, inventory, preview, and management hub.",
   "type": "module",
   "main": "./index.ts",
@@ -55,8 +55,8 @@
     "@mariozechner/pi-tui": "^0.70.5"
   },
   "devDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.70.5",
-    "@mariozechner/pi-tui": "^0.70.5",
+    "@mariozechner/pi-coding-agent": "^0.70.6",
+    "@mariozechner/pi-tui": "^0.70.6",
     "@types/node": "^25.6.0",
     "typescript": "^6.0.3"
   },
