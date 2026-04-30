@@ -7,10 +7,10 @@ import { createSkillsShProvider } from "./skills-sh-provider.js";
 export function createProviders(config: SkillHubConfig, runner: CommandRunner): SkillProvider[] {
   const providers: SkillProvider[] = [];
   if (config.providers.skillsSh) {
-    providers.push(createSkillsShProvider(runner, config.requestTimeoutMs));
+    providers.push(createSkillsShProvider(runner, config.requestTimeoutMs, config.skillsSh));
   }
   if (config.providers.skillsMp) {
-    providers.push(createSkillsMpProvider(config.requestTimeoutMs));
+    providers.push(createSkillsMpProvider(config.requestTimeoutMs, undefined, config.apiKeys.skillsMp));
   }
   return providers;
 }

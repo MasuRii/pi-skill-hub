@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { buildSkillsAddCommand } from "../src/commands/skills-command.js";
 import { buildSkillsShFindCommand, createSkillsShProvider } from "../src/providers/skills-sh-provider.js";
 import { createSkillsMpProvider, extractSkillsMpSkills, type SkillsMpHttpClient } from "../src/providers/skillsmp-provider.js";
+import { parseSkillsShReference, skillsShIdentifier } from "../src/providers/skills-sh-identifiers.js";
 import type { CommandRunner, CommandRunnerResult } from "../src/types.js";
 
 function runnerReturning(result: CommandRunnerResult, calls: Array<{ command: string; args: readonly string[] }> = []): CommandRunner {
@@ -13,6 +14,14 @@ function runnerReturning(result: CommandRunnerResult, calls: Array<{ command: st
     },
   };
 }
+
+const SKILLS_SH_CLI_CONFIG = {
+  apiBaseUrl: "https://skills.sh",
+  downloadBaseUrl: "https://skills.sh",
+  detailBaseUrl: "https://skills.sh",
+  transport: "cli" as const,
+  cliCompatibility: true,
+};
 
 function assertSkillsCommandShape(command: { command: string; args: readonly string[] }, skillsArgs: readonly string[]): void {
   if (process.platform === "win32") {
@@ -30,7 +39,29 @@ function assertSkillsCommandShape(command: { command: string; args: readonly str
   }
 }
 
-test("skills.sh provider uses npm exec command form compatible with captured Pi execution", async () => {
+test("skills.sh identifiers support legacy install references and documented API IDs", () => {
+  assert.deepEqual(parseSkillsShReference("owner/repo@skill-name"), { owner: "owner", repo: "repo", skill: "skill-name" });
+  assert.deepEqual(parseSkillsShReference("owner/repo/skill-name"), { owner: "owner", repo: "repo", skill: "skill-name" });
+  assert.equal(skillsShIdentifier({ owner: "owner", repo: "repo", skill: "skill-name" }), "owner/repo@skill-name");
+});
+
+test("skills.sh provider is unavailable for CLI transport until compatibility mode is explicit", () => {
+  const provider = createSkillsShProvider(
+    runnerReturning({ stdout: "", stderr: "", code: 0 }),
+    1000,
+    {
+      apiBaseUrl: "https://skills.sh",
+      downloadBaseUrl: "https://skills.sh",
+      detailBaseUrl: "https://skills.sh",
+      transport: "cli",
+      cliCompatibility: false,
+    },
+  );
+
+  assert.equal(provider.isAvailable(), false);
+});
+
+test("skills.sh provider uses npm exec command form only in explicit CLI compatibility mode", async () => {
   const calls: Array<{ command: string; args: readonly string[] }> = [];
   const provider = createSkillsShProvider(
     runnerReturning(
@@ -42,6 +73,7 @@ test("skills.sh provider uses npm exec command form compatible with captured Pi 
       calls,
     ),
     1000,
+    SKILLS_SH_CLI_CONFIG,
   );
 
   const results = await provider.search("frontend design", "keyword", 10);
@@ -70,32 +102,48 @@ test("skills add command builder uses the same cross-platform npm exec strategy"
   assertSkillsCommandShape(command, ["add", "https://github.com/example/skill.git", "-g", "-y"]);
 });
 
-test("skills.sh provider parses skills.sh API source and skillId into download-compatible identifiers", async () => {
+test("skills.sh provider parses API search source and skillId into download-compatible identifiers", async () => {
+  const calls: string[] = [];
   const provider = createSkillsShProvider(
-    runnerReturning({
-      stdout: JSON.stringify({
-        skills: [
-          {
-            id: "frontend-design",
-            skillId: "frontend-design",
-            name: "Frontend Design",
-            source: "anthropics/skills",
-            installs: 42,
-            description: "Design frontend UI",
-          },
-        ],
-      }),
-      stderr: "",
-      code: 0,
-    }),
+    runnerReturning({ stdout: "unexpected CLI", stderr: "", code: 1 }),
     1000,
+    {
+      apiBaseUrl: "https://registry.example.test",
+      downloadBaseUrl: "https://skills.sh",
+      detailBaseUrl: "https://skills.sh",
+      transport: "api",
+      cliCompatibility: false,
+      apiKey: "configured-key",
+    },
+    async ({ url, apiKey }) => {
+      calls.push(`${url.toString()}|${apiKey ?? ""}`);
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          skills: [
+            {
+              id: "frontend-design",
+              skillId: "frontend-design",
+              name: "Frontend Design",
+              source: "anthropics/skills",
+              installs: 42,
+              description: "Design frontend UI",
+            },
+          ],
+        }),
+      };
+    },
   );
 
   const results = await provider.search("frontend", "keyword", 20);
 
   assert.equal(results[0]?.id, "anthropics/skills@frontend-design");
   assert.equal(results[0]?.sourceUrl, "https://skills.sh/anthropics/skills/frontend-design");
+  assert.equal(results[0]?.sourceOwner, "anthropics");
+  assert.equal(results[0]?.sourceRepository, "skills");
+  assert.equal(results[0]?.sourcePath, "frontend-design");
   assert.equal(results[0]?.name, "Frontend Design");
+  assert.deepEqual(calls, ["https://registry.example.test/api/search?q=frontend&limit=20|configured-key"]);
 });
 
 test("skills.sh provider parses useful stdout even when CLI exits nonzero", async () => {
@@ -106,6 +154,7 @@ test("skills.sh provider parses useful stdout even when CLI exits nonzero", asyn
       code: 1,
     }),
     1000,
+    SKILLS_SH_CLI_CONFIG,
   );
 
   const results = await provider.search("frontend", "keyword", 5);
@@ -123,6 +172,7 @@ test("skills.sh provider treats explicit nonzero no-results output as empty resu
       code: 1,
     }),
     1000,
+    SKILLS_SH_CLI_CONFIG,
   );
 
   await assert.doesNotReject(async () => {
@@ -139,11 +189,12 @@ test("skills.sh provider returns actionable failure details for genuine nonzero 
       code: 1,
     }),
     1000,
+    SKILLS_SH_CLI_CONFIG,
   );
 
   await assert.rejects(
     () => provider.search("frontend", "keyword", 5),
-    /skills\.sh search failed with exit code 1: npm error Missing script: "skills"/u,
+    /skills\.sh CLI compatibility search failed with exit code 1: npm error Missing script: "skills"/u,
   );
 });
 
@@ -185,6 +236,8 @@ test("SkillsMP keyword search is available without API key and parses observed n
     assert.equal(results[0]?.author, "publisher");
     assert.equal(results[0]?.popularity, 1500);
     assert.equal(results[0]?.githubUrl, "https://github.com/example/friendly-name");
+    assert.equal(results[0]?.sourceOwner, "example");
+    assert.equal(results[0]?.sourceRepository, "friendly-name");
     assert.equal(results[0]?.installReference, "https://github.com/example/friendly-name");
   } finally {
     if (previousKey === undefined) {
@@ -193,6 +246,20 @@ test("SkillsMP keyword search is available without API key and parses observed n
       process.env.SKILLSMP_API_KEY = previousKey;
     }
   }
+});
+
+test("SkillsMP provider sends configured API key without requiring environment mutation", async () => {
+  const calls: Array<Parameters<SkillsMpHttpClient>[0]> = [];
+  const provider = createSkillsMpProvider(1000, async (request) => {
+    calls.push(request);
+    return { results: [{ id: "keyed-id", name: "keyed", owner: "owner" }] };
+  }, "configured-key");
+
+  const results = await provider.search("multi token ai query", "ai", 10);
+
+  assert.equal(calls[0]?.apiKey, "configured-key");
+  assert.equal(calls[0]?.endpoint, "skills/ai-search");
+  assert.equal(results[0]?.name, "keyed");
 });
 
 test("SkillsMP AI search requires API key with actionable guidance", async () => {
@@ -205,7 +272,7 @@ test("SkillsMP AI search requires API key with actionable guidance", async () =>
   try {
     await assert.rejects(
       () => provider.search("find a skill for complex multi token request", "ai", 10),
-      /SkillsMP AI search requires SKILLSMP_API_KEY.*shorter keyword query/u,
+      /SkillsMP AI search requires apiKeys\.skillsMp or SKILLSMP_API_KEY.*shorter keyword query/u,
     );
   } finally {
     if (previousKey === undefined) {

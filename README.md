@@ -11,9 +11,10 @@
 
 - Searches supported remote skill providers from inside Pi.
 - Inventories local and external skill roots with provenance metadata.
-- Opens an interactive browser for remote skill previews.
-- Builds explicit install, adopt, update, and remove plans before applying changes.
-- Requires confirmation tokens for mutating command-line flows.
+- Opens a unified `/skill-hub` modal workspace with Browse, Inventory, Install, Update, Sources, and Remove panes.
+- Uses terminal-size-aware modal sizing so the workspace expands on large terminals and stays bounded on small terminals.
+- Builds explicit install, adopt, discovered source binding, manual source URL binding, update, refresh, and remove plans before applying changes.
+- Requires confirmation tokens for every mutating flow.
 - Writes debug logs only to the extension-local `debug/` directory when `debug` is enabled.
 
 ## Installation
@@ -41,28 +42,26 @@ Place this folder in one of Pi's extension discovery paths:
 
 ## Usage
 
-Open the interactive browser:
+Open the unified modal workspace:
 
 ```text
 /skill-hub
-/skill-hub browse
 ```
 
-Command forms:
+The workspace contains internal panes for:
 
-| Command | Purpose |
+| Pane | Purpose |
 |---|---|
-| `/skill-hub search <query>` | Search configured remote providers. |
-| `/skill-hub list` | Show local skill inventory. |
-| `/skill-hub inspect <skill>` | Inspect a local skill and provenance metadata. |
-| `/skill-hub adopt <skill>` | Preview adopting an unmanaged local skill. |
-| `/skill-hub install <skill-id>` | Preview installing a remote skill. |
-| `/skill-hub update [skill]` | Check update status for one skill or all skills. |
-| `/skill-hub remove <skill>` | Preview removing a managed skill. |
-| `/skill-hub refresh` | Preview manifest refresh operations. |
-| `/skill-hub help` | Show command help. |
+| Browse | Search configured remote providers, preview remote SKILL.md content, and install after confirmation. |
+| Inventory | Inspect discovered local/external skills and start unmanaged-skill adoption. |
+| Install | Install directly by skill ID, skills.sh URL, GitHub URL, or provider reference. |
+| Update | Check/apply staged updates and refresh inventory drift/provenance status. |
+| Sources | Discover, bind, or auto-bind provider provenance for local skills. |
+| Remove | Remove clean managed local skills after preview and confirmation. |
 
-Mutating commands stay preview-only until `--apply --confirm <token>` is supplied.
+Use ←/→ or Tab/Shift+Tab to move between panes, ↑/↓ to choose a pane action, Enter to run it, and Esc to close. Supplying legacy subcommand text after `/skill-hub` opens the modal workspace instead; feature flows now live inside the panes.
+
+Mutating flows stay preview-only until their confirmation prompt is accepted with the generated token.
 
 ## Configuration
 
@@ -89,6 +88,8 @@ Configuration options:
 | `providers.skillsMp` | `boolean` | `true` | Enables Skills Marketplace provider search. |
 | `maxSearchResults` | `number` | `20` | Limits provider search results. |
 | `requestTimeoutMs` | `number` | `10000` | Bounds provider and remote preview requests. |
+| `apiKeys.github` | `string` | unset | Optional GitHub API key for source previews and update staging requests. |
+| `apiKeys.skillsMp` | `string` | unset | Optional SkillsMP API key for authenticated/AI provider search; `SKILLSMP_API_KEY` remains supported. |
 | `localSkillRoot` | `string` | home default | Overrides the managed local skill root. |
 | `externalSkillRoots` | `string[]` | home default | Adds read-only external inventory roots. |
 | `updateStagingRoot` | `string` | extension data default | Controls update staging location. |

@@ -1,6 +1,7 @@
 import type { AggregatedSearchResult, ProviderSearchSummary, SearchMode, SkillSearchResult } from "../types.js";
 import type { SkillProvider } from "../providers/index.js";
 import { getErrorMessage } from "../utils/errors.js";
+import { sourceIdentityKey } from "../utils/source-reference.js";
 
 const STOPWORDS = new Set(["a", "an", "and", "for", "in", "of", "the", "to", "with"]);
 
@@ -8,7 +9,7 @@ export function normalizeQuery(query: string): string {
   return query.trim().replace(/^[:\-–—\s]+/, "").replace(/[?.!]+$/, "").trim();
 }
 
-function tokenize(value: string): string[] {
+export function tokenizeSearchText(value: string): string[] {
   return normalizeQuery(value)
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
@@ -19,11 +20,11 @@ function tokenize(value: string): string[] {
 }
 
 export function chooseSearchMode(query: string): SearchMode {
-  return tokenize(query).length >= 4 ? "ai" : "keyword";
+  return tokenizeSearchText(query).length >= 4 ? "ai" : "keyword";
 }
 
 export function buildSearchCandidates(query: string): string[] {
-  const tokens = tokenize(query);
+  const tokens = tokenizeSearchText(query);
   const candidates: string[] = [];
   const add = (value: string): void => {
     const normalized = normalizeQuery(value.toLowerCase());
@@ -47,8 +48,11 @@ export function buildSearchCandidates(query: string): string[] {
   return candidates;
 }
 
-function dedupeKey(skill: SkillSearchResult): string {
-  return `${skill.name.toLowerCase()}::${skill.author.toLowerCase()}`;
+function dedupeKeys(skill: SkillSearchResult): string[] {
+  return [
+    sourceIdentityKey(skill),
+    `name:${skill.name.toLowerCase()}::${skill.author.toLowerCase()}`,
+  ];
 }
 
 function qualityScore(skill: SkillSearchResult): number {
@@ -58,17 +62,26 @@ function qualityScore(skill: SkillSearchResult): number {
 export function deduplicateSkills(skills: readonly SkillSearchResult[]): SkillSearchResult[] {
   const seen = new Map<string, SkillSearchResult>();
   for (const skill of skills) {
-    const key = dedupeKey(skill);
-    const existing = seen.get(key);
+    const keys = dedupeKeys(skill);
+    const existing = keys.map((key) => seen.get(key)).find((candidate): candidate is SkillSearchResult => Boolean(candidate));
     if (!existing || qualityScore(skill) > qualityScore(existing)) {
-      seen.set(key, skill);
+      if (existing) {
+        for (const [key, value] of seen.entries()) {
+          if (value === existing) {
+            seen.set(key, skill);
+          }
+        }
+      }
+      for (const key of keys) {
+        seen.set(key, skill);
+      }
     }
   }
-  return [...seen.values()];
+  return [...new Set(seen.values())];
 }
 
 function queryMatchScore(skill: SkillSearchResult, query: string): number {
-  const queryTokens = tokenize(query);
+  const queryTokens = tokenizeSearchText(query);
   if (queryTokens.length === 0) {
     return 0;
   }

@@ -1,5 +1,6 @@
 import { request as httpsRequest } from "node:https";
 import type { ProviderId, SearchMode, SkillSearchResult } from "../types.js";
+import { parseGithubSourceUrl, sourceReferenceFromGithubSource, sourceIdentityKey } from "../utils/source-reference.js";
 import type { SkillProvider } from "./provider-types.js";
 
 const API_HOST = "skillsmp.com";
@@ -39,9 +40,14 @@ interface SkillsMpRequest {
 
 export type SkillsMpHttpClient = (request: SkillsMpRequest) => Promise<unknown>;
 
-function apiKey(): string | undefined {
+function environmentApiKey(): string | undefined {
   const value = process.env.SKILLSMP_API_KEY?.trim();
   return value && value.length > 0 ? value : undefined;
+}
+
+function effectiveApiKey(configuredApiKey: string | undefined): string | undefined {
+  const configured = configuredApiKey?.trim();
+  return configured && configured.length > 0 ? configured : environmentApiKey();
 }
 
 function endpointForMode(mode: SearchMode): string {
@@ -176,21 +182,38 @@ function toSearchResult(skill: SkillsMpApiSkill): SkillSearchResult | undefined 
   }
   const githubUrl = firstNonEmpty(skill.githubUrl, skill.github_url, skill.repositoryUrl);
   const sourceUrl = firstNonEmpty(skill.skillUrl, skill.sourceUrl, skill.url, githubUrl);
+  const githubSource = parseGithubSourceUrl(githubUrl);
+  const sourceReference = githubSource ? sourceReferenceFromGithubSource(githubSource, "skillsmp") : undefined;
   return {
     id,
     name,
-    author: firstNonEmpty(skill.author, skill.owner, skill.username, skill.publisher) ?? "unknown",
+    author: firstNonEmpty(skill.author, skill.owner, skill.username, skill.publisher, sourceReference?.owner) ?? "unknown",
     description: firstNonEmpty(skill.description, skill.summary) ?? "No description provided.",
     popularity: numericPopularity(skill.downloads ?? skill.downloadCount ?? skill.installCount ?? skill.installs ?? skill.stars),
     provider: "skillsmp" satisfies ProviderId,
     sourceUrl,
     githubUrl,
+    sourceOwner: sourceReference?.owner,
+    sourceRepository: sourceReference?.repository,
+    sourcePath: sourceReference?.path,
     installHint: githubUrl ? `npm exec --yes --package=skills -- skills add ${githubUrl}` : undefined,
     installReference: githubUrl ?? id,
   };
 }
 
-export function createSkillsMpProvider(timeoutMs: number, httpClient: SkillsMpHttpClient = requestJson): SkillProvider {
+function deduplicateProviderResults(skills: readonly SkillSearchResult[]): SkillSearchResult[] {
+  const seen = new Map<string, SkillSearchResult>();
+  for (const skill of skills) {
+    const key = sourceIdentityKey(skill);
+    const existing = seen.get(key);
+    if (!existing || skill.popularity > existing.popularity) {
+      seen.set(key, skill);
+    }
+  }
+  return [...seen.values()];
+}
+
+export function createSkillsMpProvider(timeoutMs: number, httpClient: SkillsMpHttpClient = requestJson, configuredApiKey?: string | undefined): SkillProvider {
   return {
     id: "skillsmp",
     name: "SkillsMP",
@@ -199,12 +222,12 @@ export function createSkillsMpProvider(timeoutMs: number, httpClient: SkillsMpHt
       return true;
     },
     async search(query: string, mode: SearchMode, limit: number): Promise<SkillSearchResult[]> {
-      const key = apiKey();
+      const key = effectiveApiKey(configuredApiKey);
       if (mode === "ai" && !key) {
-        throw new Error("SkillsMP AI search requires SKILLSMP_API_KEY. Use a shorter keyword query or configure the API key for AI search.");
+        throw new Error("SkillsMP AI search requires apiKeys.skillsMp or SKILLSMP_API_KEY. Use a shorter keyword query or configure the API key for AI search.");
       }
       const payload = await httpClient({ endpoint: endpointForMode(mode), query, limit, mode, apiKey: key, timeoutMs });
-      return extractSkillsMpSkills(payload).map(toSearchResult).filter((item): item is SkillSearchResult => Boolean(item)).slice(0, limit);
+      return deduplicateProviderResults(extractSkillsMpSkills(payload).map(toSearchResult).filter((item): item is SkillSearchResult => Boolean(item))).slice(0, limit);
     },
   };
 }

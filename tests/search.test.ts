@@ -25,6 +25,17 @@ test("search deduplicates by name and keeps richer higher-ranked result", () => 
   assert.equal(deduped[0]?.provider, "skillsmp");
 });
 
+
+test("search deduplicates repeated provider rows by canonical source identity", () => {
+  const deduped = deduplicateSkills([
+    { ...skill("node-connect", 363234, "skillsmp"), id: "first-id", author: "openclaw", sourceUrl: "https://skillsmp.com/skills/openclaw-openclaw-skills-node-connect-skill-md", githubUrl: "https://github.com/openclaw/openclaw/tree/main/skills/node-connect" },
+    { ...skill("node-connect", 363234, "skillsmp"), id: "second-id", author: "OpenClaw", sourceUrl: "https://skillsmp.com/skills/openclaw-openclaw-skills-node-connect-skill-md", githubUrl: "https://github.com/openclaw/openclaw/tree/main/skills/node-connect" },
+  ]);
+
+  assert.equal(deduped.length, 1);
+  assert.equal(deduped[0]?.githubUrl, "https://github.com/openclaw/openclaw/tree/main/skills/node-connect");
+});
+
 test("search ranks query matches before popularity ties", () => {
   const ranked = rankSkills([
     { ...skill("docker", 100), description: "container tooling" },

@@ -3,8 +3,11 @@ import { resolve } from "node:path";
 import type { SkillHubConfig } from "../config/config.js";
 import { findInventoryItem, type collectInventory } from "../inventory/inventory.js";
 import type { InventoryItem, InventorySnapshot, SafetyPlan, SkillSearchResult, UpdateStatusReport } from "../types.js";
+import type { SourceDiscoveryBinding, SourceDiscoveryMatch } from "../discovery/source-discovery.js";
+import { MIN_AUTO_BIND_SOURCE_SCORE, MIN_BIND_SOURCE_SCORE } from "../discovery/source-discovery.js";
 import { isPathInside, resolveSafeLocalSkillPath } from "../utils/path-utils.js";
 import { createInstallDescriptor, skillNameFromInstallId } from "./install-descriptor.js";
+import { sourceReferenceLabel } from "../utils/source-reference.js";
 
 export type Snapshot = ReturnType<typeof collectInventory> | InventorySnapshot;
 
@@ -93,6 +96,111 @@ export function buildInstallPreviewPlan(config: SkillHubConfig, skill: SkillSear
     protected: false,
   });
   plan.canApply = true;
+  return plan;
+}
+
+export function buildBindSourcePlan(snapshot: Snapshot, target: string, match: SourceDiscoveryMatch): SafetyPlan {
+  const plan = safePlan("bind_source", `Bind source for ${target}`);
+  const item = findInventoryItem(snapshot, target);
+  plan.confirmationToken = `${target}:${match.skill.provider}:${match.skill.id}`;
+
+  if (!item) {
+    plan.blocked.push({ kind: "skip", target, description: "Skill was not found in local inventory.", protected: true });
+    return plan;
+  }
+  plan.confirmationToken = `${item.name}:${match.skill.provider}:${match.skill.id}`;
+
+  if (item.rootType !== "local" || item.classification === "missing") {
+    plan.blocked.push({ kind: "skip", target: item.path, description: "Only existing local skills can be bound to a provider source.", protected: true });
+    return plan;
+  }
+  if (!item.fingerprint) {
+    plan.blocked.push({ kind: "skip", target: item.path, description: "Skill fingerprint could not be computed.", protected: true });
+    return plan;
+  }
+  if (item.classification === "managed" && item.manifestEntry?.provider && item.manifestEntry.sourceId) {
+    plan.blocked.push({ kind: "skip", target: item.path, description: "Skill already has provider provenance metadata.", protected: true });
+    return plan;
+  }
+  if (match.score < MIN_BIND_SOURCE_SCORE) {
+    plan.blocked.push({
+      kind: "skip",
+      target: item.path,
+      description: `Best source match confidence is too low (${Math.round(match.score * 100).toString()}%).`,
+      protected: true,
+    });
+    return plan;
+  }
+
+  plan.operations.push({
+    kind: "write_manifest",
+    target: item.path,
+    description: `Bind local skill to ${match.skill.provider} source ${sourceReferenceLabel(match.skill)} with ${match.confidence} confidence.`,
+    protected: false,
+  });
+  plan.canApply = true;
+  plan.warnings.push("Provider-source binding enables future update checks; review the match before applying because local content is not changed now.");
+  return plan;
+}
+
+export function buildBulkBindSourcePlan(snapshot: Snapshot, bindings: readonly SourceDiscoveryBinding[]): SafetyPlan {
+  const plan = safePlan("bind_source", `Bulk bind provider sources for ${String(bindings.length)} skills`);
+  plan.confirmationToken = `bulk-bind-source:${String(bindings.length)}`;
+
+  if (bindings.length === 0) {
+    plan.blocked.push({ kind: "skip", target: snapshot.localRoot, description: "No high-confidence unlinked local skills were available for provider-source binding.", protected: true });
+    return plan;
+  }
+
+  const seenTargets = new Set<string>();
+  for (const binding of bindings) {
+    const item = findInventoryItem(snapshot, binding.item.name);
+    if (!item) {
+      plan.blocked.push({ kind: "skip", target: binding.item.name, description: "Skill was not found in local inventory.", protected: true });
+      continue;
+    }
+    if (seenTargets.has(item.path)) {
+      plan.blocked.push({ kind: "skip", target: item.path, description: "Duplicate bulk binding target was skipped.", protected: true });
+      continue;
+    }
+    seenTargets.add(item.path);
+    if (item.rootType !== "local" || item.classification === "missing") {
+      plan.blocked.push({ kind: "skip", target: item.path, description: "Only existing local skills can be bound to a provider source.", protected: true });
+      continue;
+    }
+    if (!item.fingerprint) {
+      plan.blocked.push({ kind: "skip", target: item.path, description: "Skill fingerprint could not be computed.", protected: true });
+      continue;
+    }
+    if (item.classification === "managed" && item.manifestEntry?.provider && item.manifestEntry.sourceId) {
+      plan.blocked.push({ kind: "skip", target: item.path, description: "Skill already has provider provenance metadata.", protected: true });
+      continue;
+    }
+    if (binding.match.score < MIN_AUTO_BIND_SOURCE_SCORE) {
+      plan.blocked.push({
+        kind: "skip",
+        target: item.path,
+        description: `Best source match confidence is below the auto-bind threshold (${Math.round(binding.match.score * 100).toString()}%).`,
+        protected: true,
+      });
+      continue;
+    }
+    plan.operations.push({
+      kind: "write_manifest",
+      target: item.path,
+      description: `Bind local skill to ${binding.match.skill.provider} source ${sourceReferenceLabel(binding.match.skill)} with ${binding.match.confidence} confidence (${Math.round(binding.match.score * 100).toString()}%).`,
+      protected: false,
+    });
+  }
+
+  if (plan.operations.length > 0) {
+    plan.canApply = true;
+    plan.warnings.push(`Auto-binding only includes matches at or above ${Math.round(MIN_AUTO_BIND_SOURCE_SCORE * 100).toString()}% confidence; lower-confidence and unmatched local skills are skipped.`);
+    if (plan.blocked.length > 0) {
+      plan.warnings.push(`${String(plan.blocked.length)} candidate${plan.blocked.length === 1 ? " was" : "s were"} skipped by safety checks.`);
+    }
+  }
+
   return plan;
 }
 
@@ -185,16 +293,31 @@ export function buildRemovePreviewPlan(snapshot: Snapshot, target: string): Safe
 export function buildRefreshPlan(snapshot: Snapshot): SafetyPlan {
   const plan = safePlan("refresh", "Refresh inventory and drift status");
   plan.requiresConfirmation = false;
-  plan.confirmationToken = undefined;
+  plan.confirmationToken = "refresh-stale-provenance";
   plan.operations.push({ kind: "scan_inventory", target: snapshot.localRoot, description: `Scanned ${String(snapshot.items.length)} local/external/manifest skills.`, protected: false });
 
   for (const item of snapshot.items) {
     if (item.rootType === "external" || item.classification === "unknown") {
       plan.blocked.push({ kind: "skip", target: item.path, description: `${item.classification} skill is protected from mutation by default.`, protected: true });
     }
+    if (item.classification === "missing") {
+      plan.operations.push({
+        kind: "write_manifest",
+        target: item.name,
+        description: `Remove stale provenance entry because the recorded skill directory is missing: ${item.path}`,
+        protected: false,
+      });
+    }
     if (item.driftStatus === "drifted") {
       plan.warnings.push(`${item.name} has drifted from its recorded fingerprint.`);
     }
+  }
+
+  const staleCount = plan.operations.filter((operation) => operation.kind === "write_manifest").length;
+  if (staleCount > 0) {
+    plan.requiresConfirmation = true;
+    plan.canApply = true;
+    plan.warnings.push(`Found ${String(staleCount)} stale provenance entr${staleCount === 1 ? "y" : "ies"} for missing local skill directories.`);
   }
 
   return plan;

@@ -8,6 +8,7 @@ import type {
   UpdateStatusReport,
 } from "../types.js";
 import { summarizeDiff } from "../update/file-diff.js";
+import { sourceReferenceFromProvenanceEntry } from "../utils/source-reference.js";
 
 function truncate(value: string, maxLength: number): string {
   return value.length > maxLength ? `${value.slice(0, Math.max(0, maxLength - 1))}…` : value;
@@ -54,6 +55,16 @@ export function formatInspect(item: InventoryItem | undefined): string {
     }
     if (item.manifestEntry.sourceUrl) {
       lines.push(`Source URL: ${item.manifestEntry.sourceUrl}`);
+    }
+    const reference = sourceReferenceFromProvenanceEntry(item.manifestEntry);
+    if (reference?.owner) {
+      lines.push(`Source owner: ${reference.owner}`);
+    }
+    if (reference?.repository) {
+      lines.push(`Source repository: ${reference.owner ? `${reference.owner}/` : ""}${reference.repository}`);
+    }
+    if (reference?.path) {
+      lines.push(`Source path: ${reference.path}`);
     }
   }
   return lines.join("\n");
@@ -140,22 +151,4 @@ export function formatPlan(plan: SafetyPlan): string {
     }
   }
   return lines.join("\n");
-}
-
-export function formatHelp(): string {
-  return [
-    "Usage: /skill-hub [command]",
-    "Bare /skill-hub opens the overlay browser when interactive UI is available.",
-    "Commands:",
-    "- browse",
-    "- search <query>",
-    "- list",
-    "- inspect <skill>",
-    "- adopt <skill> [--apply --confirm <skill>]",
-    "- install <skill-id> [--apply --confirm <skill-id>]",
-    "- update [skill] [--apply --confirm <skill>]",
-    "- remove <skill> [--apply --confirm <skill>]",
-    "- refresh",
-    "All directory mutations are preview-first and confirmation-gated.",
-  ].join("\n");
 }

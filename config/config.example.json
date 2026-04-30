@@ -4,6 +4,19 @@
     "skillsSh": true,
     "skillsMp": true
   },
+  "skillsSh": {
+    "apiBaseUrl": "https://skills.sh",
+    "downloadBaseUrl": "https://skills.sh",
+    "detailBaseUrl": "https://skills.sh",
+    "apiKey": "",
+    "transport": "api",
+    "cliCompatibility": false
+  },
   "maxSearchResults": 20,
-  "requestTimeoutMs": 10000
+  "requestTimeoutMs": 10000,
+  "apiKeys": {
+    "github": "",
+    "skillsMp": "",
+    "skillsSh": ""
+  }
 }

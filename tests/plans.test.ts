@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { collectInventory } from "../src/inventory/inventory.js";
@@ -78,6 +78,33 @@ test("install preview targets only direct local skill children for valid install
   assert.equal(plan.canApply, true);
   assert.equal(plan.operations.length, 2);
   assert.ok(plan.operations.every((operation) => isPathInside(operation.target, localRoot) || operation.target === "owner/repo@new-skill"));
+});
+
+test("install preview canonicalizes skills.sh URLs and display names to installer-safe skill identifiers", () => {
+  const root = mkdtempSync(join(tmpdir(), "skill-hub-install-skills-sh-url-"));
+  const localRoot = join(root, "local");
+  const externalRoot = join(root, "external");
+  const config = fixtureConfig(localRoot, externalRoot);
+
+  const urlPlan = buildInstallPreviewPlan(config, "https://skills.sh/owner/repo/new-skill");
+  assert.equal(urlPlan.canApply, true);
+  assert.equal(urlPlan.confirmationToken, "owner/repo@new-skill");
+  assert.equal(urlPlan.operations.find((operation) => operation.kind === "run_command")?.target, "owner/repo@new-skill");
+  assert.ok(urlPlan.operations.find((operation) => operation.kind === "write_manifest")?.target.endsWith(join("local", "new-skill")));
+
+  const sourceSkill: SkillSearchResult = {
+    id: "owner/repo@display-skill",
+    name: "Display Skill",
+    author: "owner",
+    description: "Provider display name fixture",
+    popularity: 4,
+    provider: "skills-sh",
+    sourceUrl: "https://skills.sh/owner/repo/display-skill",
+  };
+  const displayPlan = buildInstallPreviewPlan(config, sourceSkill);
+  assert.equal(displayPlan.canApply, true);
+  assert.equal(displayPlan.confirmationToken, "owner/repo@display-skill");
+  assert.ok(displayPlan.operations.find((operation) => operation.kind === "write_manifest")?.target.endsWith(join("local", "display-skill")));
 });
 
 test("install preview blocks traversal and path-like skill names before target path construction", () => {
@@ -185,6 +212,63 @@ test("apply install plan uses descriptor local name and does not overwrite exist
     applyInstallPlan(plan, config, { async run() { return { stdout: "", stderr: "", code: 0 }; } }, { confirmToken: plan.confirmationToken ?? "", manifestPath, sourceSkill }),
     /Refusing to install over existing skill directory/u,
   );
+});
+
+
+test("apply install plan installs skills.sh content through the download API", async () => {
+  const root = mkdtempSync(join(tmpdir(), "skill-hub-apply-skills-sh-display-"));
+  const localRoot = join(root, "local");
+  const externalRoot = join(root, "external");
+  const manifestPath = join(root, "provenance.json");
+  const config = fixtureConfig(localRoot, externalRoot);
+  const sourceSkill: SkillSearchResult = {
+    id: "owner/repo@display-skill",
+    name: "Display Skill",
+    author: "owner",
+    description: "skills.sh display title fixture",
+    popularity: 10,
+    provider: "skills-sh",
+    sourceUrl: "https://skills.sh/owner/repo/display-skill",
+  };
+  const plan = buildInstallPreviewPlan(config, sourceSkill);
+  const calls: Array<{ command: string; args: readonly string[] }> = [];
+  const httpRequests: string[] = [];
+
+  await applyInstallPlan(plan, config, {
+    async run(command, args) {
+      calls.push({ command, args });
+      return { stdout: "unexpected CLI install", stderr: "", code: 1 };
+    },
+  }, {
+    confirmToken: plan.confirmationToken ?? "",
+    manifestPath,
+    sourceSkill,
+    async skillsShHttpClient({ url }) {
+      httpRequests.push(url.toString());
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          files: [
+            { path: "display-skill/SKILL.md", contents: "# Display Skill\n\nInstalled from skills.sh download." },
+            { path: "display-skill/assets/example.txt", contents: "asset" },
+          ],
+        }),
+      };
+    },
+  });
+
+  assert.deepEqual(calls, []);
+  assert.deepEqual(httpRequests, ["https://skills.sh/api/download/owner/repo/display-skill"]);
+  assert.equal(existsSync(join(localRoot, "display-skill")), true);
+  assert.match(readFileSync(join(localRoot, "display-skill", "SKILL.md"), "utf-8"), /Installed from skills\.sh download/u);
+  assert.equal(readFileSync(join(localRoot, "display-skill", "assets", "example.txt"), "utf-8"), "asset");
+  const manifest = loadManifest(manifestPath);
+  assert.equal(manifest.skills["display-skill"]?.sourceId, "owner/repo@display-skill");
+  assert.equal(manifest.skills["display-skill"]?.provider, "skills-sh");
+  assert.equal(manifest.skills["display-skill"]?.sourceOwner, "owner");
+  assert.equal(manifest.skills["display-skill"]?.sourceRepository, "repo");
+  assert.equal(manifest.skills["display-skill"]?.skillPath, "display-skill");
+  assert.equal(manifest.skills["display-skill"]?.sourceTransport, "api");
 });
 
 test("path safety rejects Windows reserved basenames and trailing spaces or dots", () => {

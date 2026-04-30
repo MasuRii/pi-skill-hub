@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { collectInventory } from "../src/inventory/inventory.js";
@@ -9,6 +10,7 @@ import { saveManifest } from "../src/manifest/manifest-store.js";
 import { buildUpdateApplyPlan } from "../src/plans/plans.js";
 import { applyUpdatePlan } from "../src/update/update-apply.js";
 import { checkUpdateStatuses, type StageProviderContent } from "../src/update/update-checker.js";
+import { stageProviderContent } from "../src/update/provider-content.js";
 import { diffDirectories } from "../src/update/file-diff.js";
 import type { InventoryItem, ProvenanceEntry, ProvenanceManifest, StagedProviderContent } from "../src/types.js";
 import { createSkill, fixtureConfig } from "./helpers.js";
@@ -53,6 +55,58 @@ function fakeStage(stagingRoot: string, description: string): StageProviderConte
     };
   };
 }
+
+async function closeServer(server: Server): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+test("stage provider content uses skills.sh download payload for skills-sh provenance", async () => {
+  const root = mkdtempSync(join(tmpdir(), "skill-hub-update-skills-sh-stage-"));
+  const localRoot = join(root, "local");
+  const externalRoot = join(root, "external");
+  const skillPath = createSkill(localRoot, "managed-skill", "Local content");
+  const requests: string[] = [];
+  const server = createServer((request, response) => {
+    requests.push(request.url ?? "");
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      files: [
+        { path: "managed-skill/SKILL.md", contents: "# managed-skill\n\nUpstream content\n" },
+        { path: "managed-skill/assets/example.txt", contents: "asset" },
+      ],
+    }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const config = fixtureConfig(localRoot, externalRoot);
+  config.skillsSh = { ...config.skillsSh, downloadBaseUrl: `http://127.0.0.1:${String(address.port)}` };
+  const manifest = manifestWith({ ...installedEntry("managed-skill", skillPath), sourceId: "owner/repo/managed-skill" });
+  const inventory = collectInventory(config, manifest);
+  const item = inventory.items.find((entry) => entry.name === "managed-skill");
+  assert.ok(item);
+
+  try {
+    const staged = await stageProviderContent(item, config);
+    assert.deepEqual(requests, ["/api/download/owner/repo/managed-skill"]);
+    assert.equal(staged.provider, "skills-sh");
+    assert.equal(staged.sourceId, "owner/repo/managed-skill");
+    assert.match(readFileSync(join(staged.stagingPath, "SKILL.md"), "utf-8"), /Upstream content/u);
+    assert.equal(readFileSync(join(staged.stagingPath, "assets", "example.txt"), "utf-8"), "asset");
+    assert.equal(staged.diff.changed.includes("SKILL.md"), true);
+    rmSync(staged.stagingPath, { recursive: true, force: true });
+  } finally {
+    await closeServer(server);
+  }
+});
 
 test("update check reports current and available using reliable manifest provenance", async () => {
   const root = mkdtempSync(join(tmpdir(), "skill-hub-update-status-"));
