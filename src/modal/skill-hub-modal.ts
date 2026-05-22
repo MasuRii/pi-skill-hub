@@ -1,5 +1,5 @@
-import type { ExtensionCommandContext, Theme } from "@mariozechner/pi-coding-agent";
-import { Key, matchesKey, truncateToWidth, type Component, type Focusable, type TUI } from "@mariozechner/pi-tui";
+import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import { Key, matchesKey, truncateToWidth, type Component, type Focusable, type TUI } from "@earendil-works/pi-tui";
 import type { SkillHubConfig } from "../config/config.js";
 import type { InventorySnapshot } from "../types.js";
 import { sanitizeTerminalText } from "../utils/terminal-text.js";

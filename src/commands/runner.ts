@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { CommandRunner, CommandRunnerResult } from "../types.js";
 
 export function createPiCommandRunner(pi: ExtensionAPI): CommandRunner {

@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { SkillHubConfig } from "../config/config.js";
 import type { DebugLogger } from "../logging/debug-logger.js";
 import { collectInventory } from "../inventory/inventory.js";

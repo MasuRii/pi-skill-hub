@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "./config/config.js";
 import { createDebugLogger } from "./logging/debug-logger.js";
 import { registerSkillHubCommand } from "./commands/commands.js";

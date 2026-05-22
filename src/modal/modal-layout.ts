@@ -1,4 +1,4 @@
-import type { TUI } from "@mariozechner/pi-tui";
+import type { TUI } from "@earendil-works/pi-tui";
 
 export interface TerminalDimensions {
   readonly columns: number;

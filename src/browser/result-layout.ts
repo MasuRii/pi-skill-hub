@@ -1,4 +1,4 @@
-import { visibleWidth } from "@mariozechner/pi-tui";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { truncatePlainToWidth } from "../utils/terminal-width.js";
 
 export interface BrowserResultColumns {

@@ -1,4 +1,4 @@
-import { visibleWidth } from "@mariozechner/pi-tui";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { sanitizeTerminalText } from "./terminal-text.js";
 
 const SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });

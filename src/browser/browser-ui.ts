@@ -1,4 +1,4 @@
-import type { ExtensionCommandContext, Theme } from "@mariozechner/pi-coding-agent";
+import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import {
   Input,
   Key,
@@ -9,7 +9,7 @@ import {
   type SelectItem,
   type TUI,
   truncateToWidth,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 import type { SkillHubConfig } from "../config/config.js";
 import type { CommandRunner, InventorySnapshot, ProviderSearchSummary, SkillContentPreview, SkillSearchResult } from "../types.js";
 import { createProviders } from "../providers/index.js";
