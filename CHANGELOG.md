@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-06-01
+
+### Changed
+- Deferred Skill Hub command registration through a dedicated registration module to reduce startup work.
+- Aligned Pi peer and development dependency metadata with `^0.77.0 || ^0.78.0` compatibility.
+
 ## [0.2.2] - 2026-05-26
 
 ### Changed
