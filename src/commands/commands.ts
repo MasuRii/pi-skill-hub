@@ -17,7 +17,7 @@ import { createSkillHubModalSelectionState, openSkillHubModal } from "../modal/s
 import type { SkillHubModalAction } from "../modal/modal-types.js";
 import { sourceReferenceFromSkill, sourceReferenceLabel } from "../utils/source-reference.js";
 
-interface CommandServices {
+export interface CommandServices {
   config: SkillHubConfig;
   runner: CommandRunner;
   logger: DebugLogger;
@@ -533,7 +533,7 @@ async function handleModalAction(action: SkillHubModalAction, ctx: ExtensionComm
   }
 }
 
-async function openSkillHubWorkspace(ctx: ExtensionCommandContext, services: CommandServices): Promise<void> {
+export async function openSkillHubWorkspace(ctx: ExtensionCommandContext, services: CommandServices): Promise<void> {
   const modalSelectionState = createSkillHubModalSelectionState();
   while (true) {
     const action = await openSkillHubModal(ctx, services, snapshot(services), modalSelectionState);
