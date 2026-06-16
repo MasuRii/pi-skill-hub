@@ -137,7 +137,7 @@ function safePathSegments(pathValue: string, source: SkillsShSource): string[] {
   }
 
   const segments = normalized.split("/").filter((segment) => segment.length > 0);
-  if (segments.length === 0 || segments.some((segment) => segment === "." || segment === "..")) {
+  if (segments.length === 0 || segments.some((segment) => segment === "." || segment === ".." || WINDOWS_DRIVE_PREFIX_PATTERN.test(segment))) {
     throw new SkillHubError(`skills.sh returned an unsafe file path for ${sourceLabel(source)}: ${pathValue}`);
   }
   return segments;
