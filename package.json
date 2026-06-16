@@ -1,6 +1,6 @@
 {
   "name": "pi-skill-hub",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Safe provenance-aware Pi skill discovery, inventory, preview, and management hub.",
   "type": "module",
   "main": "./index.ts",
@@ -51,14 +51,14 @@
     "@sinclair/typebox": "^0.34.49"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.74.0 || ^0.75.0 || ^0.77.0 || ^0.78.0",
-    "@earendil-works/pi-tui": "^0.74.0 || ^0.75.0 || ^0.77.0 || ^0.78.0"
+    "@earendil-works/pi-coding-agent": "^0.74.0 || ^0.75.0 || ^0.77.0 || ^0.78.0 || ^0.79.0",
+    "@earendil-works/pi-tui": "^0.74.0 || ^0.75.0 || ^0.77.0 || ^0.78.0 || ^0.79.0"
   },
   "devDependencies": {
-    "@types/node": "^25.9.1",
+    "@types/node": "^25.9.3",
     "typescript": "^6.0.3",
-    "@earendil-works/pi-coding-agent": "^0.78.0",
-    "@earendil-works/pi-tui": "^0.78.0"
+    "@earendil-works/pi-coding-agent": "^0.79.4",
+    "@earendil-works/pi-tui": "^0.79.4"
   },
   "author": "MasuRii",
   "repository": {
