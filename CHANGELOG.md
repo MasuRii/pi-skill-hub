@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-06-16
+
+### Fixed
+- Blocked Windows drive letter prefixes (e.g., `C:`) in skills.sh download path segments to prevent path traversal on Windows.
+
 ## [0.2.3] - 2026-06-01
 
 ### Changed
