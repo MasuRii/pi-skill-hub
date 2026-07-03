@@ -1,15 +1,16 @@
 import { request } from "node:https";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative } from "node:path";
 import type { SkillHubConfig } from "../config/config.js";
 import { computeSkillFingerprint } from "../inventory/fingerprint.js";
 import type { InventoryItem, ProvenanceEntry, ProviderId, StagedProviderContent } from "../types.js";
-import { parseSkillsShReference } from "../providers/skills-sh-identifiers.js";
+import { parseSkillsShReference, SAFE_SEGMENT_PATTERN } from "../providers/skills-sh-identifiers.js";
 import { stageSkillsShSkillDirectory } from "../providers/skills-sh-download.js";
 import { SkillHubError } from "../utils/errors.js";
+import { collectHttpResponse } from "../utils/http-stream.js";
 import { parseGithubSourceUrl, type GithubSource } from "../utils/source-reference.js";
 import { githubRequestHeaders, formatGithubHttpError } from "../utils/github-http.js";
-import { isPathInside } from "../utils/path-utils.js";
+import { safeResolvedPath } from "../utils/path-utils.js";
 import { diffDirectories } from "./file-diff.js";
 
 interface GithubRepoSource extends GithubSource {
@@ -30,7 +31,6 @@ interface GithubTreeResponse {
 }
 
 const USER_AGENT = "pi-skill-hub/0.1.0";
-const SAFE_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/u;
 
 function requestText(url: URL, timeoutMs: number, githubApiKey?: string | undefined): Promise<string> {
   return new Promise((resolvePromise, reject) => {
@@ -41,11 +41,7 @@ function requestText(url: URL, timeoutMs: number, githubApiKey?: string | undefi
         headers: githubRequestHeaders(url, "application/vnd.github+json, text/plain;q=0.9, */*;q=0.8", USER_AGENT, githubApiKey),
       },
       (res) => {
-        const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
-        res.on("end", () => {
-          const body = Buffer.concat(chunks).toString("utf-8");
-          const statusCode = res.statusCode ?? 500;
+        collectHttpResponse(res, ({ statusCode, body }) => {
           if (statusCode < 200 || statusCode >= 300) {
             reject(new SkillHubError(formatGithubHttpError(url, statusCode, body, res.headers, githubApiKey)));
             return;
@@ -62,7 +58,7 @@ function requestText(url: URL, timeoutMs: number, githubApiKey?: string | undefi
   });
 }
 
-async function requestJson<T>(url: URL, timeoutMs: number, githubApiKey?: string | undefined): Promise<T> {
+async function requestGithubJson<T>(url: URL, timeoutMs: number, githubApiKey?: string | undefined): Promise<T> {
   const text = await requestText(url, timeoutMs, githubApiKey);
   try {
     return JSON.parse(text) as T;
@@ -88,7 +84,7 @@ function hasSkillsShSource(entry: ProvenanceEntry): boolean {
 }
 
 async function fetchDefaultBranch(source: GithubRepoSource, timeoutMs: number, githubApiKey?: string | undefined): Promise<string> {
-  const metadata = await requestJson<GithubRepoMetadata>(
+  const metadata = await requestGithubJson<GithubRepoMetadata>(
     new URL(`https://api.github.com/repos/${source.owner}/${source.repo}`),
     timeoutMs,
     githubApiKey,
@@ -101,7 +97,7 @@ async function fetchDefaultBranch(source: GithubRepoSource, timeoutMs: number, g
 }
 
 async function fetchTree(source: GithubRepoSource, branch: string, timeoutMs: number, githubApiKey?: string | undefined): Promise<GithubTreeItem[]> {
-  const payload = await requestJson<GithubTreeResponse>(
+  const payload = await requestGithubJson<GithubTreeResponse>(
     new URL(`https://api.github.com/repos/${source.owner}/${source.repo}/git/trees/${branch}?recursive=1`),
     timeoutMs,
     githubApiKey,
@@ -120,7 +116,7 @@ function hasTreeRoot(tree: readonly GithubTreeItem[], root: string): boolean {
   return tree.some((item) => item.path === `${root}/SKILL.md` || item.path?.startsWith(`${root}/`));
 }
 
-function selectSkillRoot(tree: readonly GithubTreeItem[], source: GithubRepoSource): string {
+function selectGithubTreeRoot(tree: readonly GithubTreeItem[], source: GithubRepoSource): string {
   const explicitRoot = source.pathSegments.join("/");
   if (explicitRoot.length > 0) {
     if (hasTreeRoot(tree, explicitRoot)) {
@@ -138,11 +134,7 @@ function selectSkillRoot(tree: readonly GithubTreeItem[], source: GithubRepoSour
 }
 
 function safeStageFilePath(stagingPath: string, relativePath: string): string {
-  const targetPath = resolve(stagingPath, relativePath);
-  if (!isPathInside(targetPath, stagingPath)) {
-    throw new SkillHubError(`Provider returned an unsafe file path: ${relativePath}`);
-  }
-  return targetPath;
+  return safeResolvedPath(stagingPath, relativePath, "Provider returned an unsafe file path");
 }
 
 async function writeGithubFile(source: GithubRepoSource, branch: string, remotePath: string, localPath: string, timeoutMs: number, githubApiKey?: string | undefined): Promise<void> {
@@ -159,7 +151,7 @@ async function writeGithubFile(source: GithubRepoSource, branch: string, remoteP
 async function stageGithubSkillDirectory(source: GithubRepoSource, stagingPath: string, timeoutMs: number, githubApiKey?: string | undefined): Promise<void> {
   const branch = source.branch ?? await fetchDefaultBranch(source, timeoutMs, githubApiKey);
   const tree = await fetchTree(source, branch, timeoutMs, githubApiKey);
-  const root = selectSkillRoot(tree, source);
+  const root = selectGithubTreeRoot(tree, source);
   const files = tree
     .map((item) => item.path)
     .filter((path): path is string => Boolean(path?.startsWith(`${root}/`)));

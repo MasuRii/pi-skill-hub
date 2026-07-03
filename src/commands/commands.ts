@@ -1,14 +1,15 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { SkillHubConfig } from "../config/config.js";
 import type { DebugLogger } from "../logging/debug-logger.js";
 import { collectInventory } from "../inventory/inventory.js";
 import { loadManifest } from "../manifest/manifest-store.js";
-import type { CommandRunner, InventoryItem, InventorySnapshot, SkillSearchResult, UpdateStatusResult } from "../types.js";
+import type { CommandRunner, InventoryItem, InventorySnapshot, SafetyPlan, SkillSearchResult, UpdateStatusResult } from "../types.js";
 import { buildAdoptPlan, buildBindSourcePlan, buildBulkBindSourcePlan, buildInstallPreviewPlan, buildRefreshPlan, buildRemovePreviewPlan, buildUpdateApplyPlan } from "../plans/plans.js";
 import { applyAdoptPlan, applyBindSourcePlan, applyBulkBindSourcePlan, applyInstallPlan, applyRefreshPlan, applyRemovePlan } from "../plans/apply.js";
 import { applyUpdatePlan } from "../update/update-apply.js";
 import { checkUpdateStatuses } from "../update/update-checker.js";
 import { getErrorMessage } from "../utils/errors.js";
+import { notify } from "./notify.js";
 import { formatInspect, formatInventory, formatPlan, formatProviderErrorSummary, formatUpdateReport } from "../ui/rendering.js";
 import { createSkillBrowserSessionState, openSkillBrowser } from "../browser/browser-ui.js";
 import { buildRemotePreview, createPreviewHttpClient, formatPreview } from "../browser/preview.js";
@@ -26,10 +27,6 @@ export interface CommandServices {
 interface InventorySelection {
   snapshot: InventorySnapshot;
   item: InventoryItem;
-}
-
-function notify(ctx: ExtensionCommandContext, message: string, level: "info" | "warning" | "error" = "info"): void {
-  ctx.ui.notify(message, level);
 }
 
 function snapshot(services: CommandServices): InventorySnapshot {
@@ -76,6 +73,33 @@ async function confirmAndApplyPlan(ctx: ExtensionCommandContext, title: string, 
     return;
   }
   await apply();
+}
+
+/**
+ * Present a plan's text, warn when it cannot be applied, otherwise confirm and
+ * apply it. Consolidates the repeated `canApply` guard + confirm/apply
+ * sequence shared by the install, update, and bind-source command handlers.
+ */
+async function presentAndApplyPlan(ctx: ExtensionCommandContext, confirmTitle: string, plan: SafetyPlan, planText: string, apply: () => Promise<void> | void): Promise<void> {
+  if (!plan.canApply) {
+    notify(ctx, planText, "warning");
+    return;
+  }
+  await confirmAndApplyPlan(ctx, confirmTitle, planText, apply);
+}
+
+/**
+ * Build, present, and apply a bind-source plan for a discovered provider match.
+ * Consolidates the repeated bind-source plan/format/confirm/apply sequence
+ * shared by the interactive and manual source-binding handlers.
+ */
+async function confirmAndApplyBindSourcePlan(ctx: ExtensionCommandContext, selection: InventorySelection, match: SourceDiscoveryMatch, confirmTitle: string, successMessage: string): Promise<void> {
+  const plan = buildBindSourcePlan(selection.snapshot, selection.item.name, match);
+  const planText = `${formatSourceMatch(match)}\n\n${formatPlan(plan)}`;
+  await presentAndApplyPlan(ctx, confirmTitle, plan, planText, () => {
+    applyBindSourcePlan(plan, selection.snapshot, match, { confirmToken: plan.confirmationToken ?? "" });
+    notify(ctx, successMessage, "info");
+  });
 }
 
 async function installSkill(skill: SkillSearchResult | string, ctx: ExtensionCommandContext, services: CommandServices): Promise<void> {
@@ -125,27 +149,42 @@ async function handleInventory(ctx: ExtensionCommandContext, services: CommandSe
   notify(ctx, item ? formatInspect(item) : "Selected skill was not found.", item ? "info" : "warning");
 }
 
-async function handleAdopt(ctx: ExtensionCommandContext, services: CommandServices): Promise<void> {
-  const selection = await selectInventoryItem(
-    ctx,
-    services,
-    "Adopt unmanaged local skill",
-    (item) => item.classification === "unknown" && item.rootType === "local",
-  );
+interface SelectionPlanOptions {
+  title: string;
+  filter: (item: InventoryItem) => boolean;
+  buildPlan: (snapshot: InventorySnapshot, name: string) => SafetyPlan;
+  confirmTitle: string;
+  successMessage: (token: string, name: string) => string;
+}
+
+async function handleSelectAndApplyPlan(
+  ctx: ExtensionCommandContext,
+  services: CommandServices,
+  options: SelectionPlanOptions,
+  apply: (plan: SafetyPlan, selection: InventorySelection) => void,
+): Promise<void> {
+  const selection = await selectInventoryItem(ctx, services, options.title, options.filter);
   if (!selection) {
     return;
   }
 
-  const plan = buildAdoptPlan(selection.snapshot, selection.item.name);
+  const plan = options.buildPlan(selection.snapshot, selection.item.name);
   const planText = formatPlan(plan);
-  if (!plan.canApply) {
-    notify(ctx, planText, "warning");
-    return;
-  }
+  await presentAndApplyPlan(ctx, options.confirmTitle, plan, planText, () => {
+    apply(plan, selection);
+    notify(ctx, options.successMessage(plan.confirmationToken ?? selection.item.name, selection.item.name), "info");
+  });
+}
 
-  await confirmAndApplyPlan(ctx, "Adopt skill?", planText, () => {
+async function handleAdopt(ctx: ExtensionCommandContext, services: CommandServices): Promise<void> {
+  await handleSelectAndApplyPlan(ctx, services, {
+    title: "Adopt unmanaged local skill",
+    filter: (item) => item.classification === "unknown" && item.rootType === "local",
+    buildPlan: (snapshot, name) => buildAdoptPlan(snapshot, name),
+    confirmTitle: "Adopt skill?",
+    successMessage: (token) => `Adopted ${token}. Run /reload if skill command visibility changed.`,
+  }, (plan, selection) => {
     applyAdoptPlan(plan, selection.snapshot, { confirmToken: plan.confirmationToken ?? "" });
-    notify(ctx, `Adopted ${plan.confirmationToken ?? selection.item.name}. Run /reload if skill command visibility changed.`, "info");
   });
 }
 
@@ -201,17 +240,7 @@ async function handleDiscoverSource(ctx: ExtensionCommandContext, services: Comm
     return;
   }
 
-  const plan = buildBindSourcePlan(selection.snapshot, selection.item.name, match);
-  const planText = `${formatSourceMatch(match)}\n\n${formatPlan(plan)}`;
-  if (!plan.canApply) {
-    notify(ctx, planText, "warning");
-    return;
-  }
-
-  await confirmAndApplyPlan(ctx, "Bind provider source?", planText, () => {
-    applyBindSourcePlan(plan, selection.snapshot, match, { confirmToken: plan.confirmationToken ?? "" });
-    notify(ctx, `Bound ${selection.item.name} to ${match.skill.provider} source ${sourceReferenceLabel(match.skill)}. Future update checks can use this provenance.`, "info");
-  });
+  await confirmAndApplyBindSourcePlan(ctx, selection, match, "Bind provider source?", `Bound ${selection.item.name} to ${match.skill.provider} source ${sourceReferenceLabel(match.skill)}. Future update checks can use this provenance.`);
 }
 
 function formatBulkSourceDiscoverySummary(report: BulkSourceDiscoveryReport): string {
@@ -262,19 +291,7 @@ async function handleManualBindSource(ctx: ExtensionCommandContext, services: Co
     return;
   }
 
-  const plan = buildBindSourcePlan(selection.snapshot, selection.item.name, match);
-  const planText = `${formatSourceMatch(match)}
-
-${formatPlan(plan)}`;
-  if (!plan.canApply) {
-    notify(ctx, planText, "warning");
-    return;
-  }
-
-  await confirmAndApplyPlan(ctx, "Link provider source?", planText, () => {
-    applyBindSourcePlan(plan, selection.snapshot, match, { confirmToken: plan.confirmationToken ?? "" });
-    notify(ctx, `Linked ${selection.item.name} to ${match.skill.provider} source ${sourceReferenceLabel(match.skill)}. Future update checks can use this provenance.`, "info");
-  });
+  await confirmAndApplyBindSourcePlan(ctx, selection, match, "Link provider source?", `Linked ${selection.item.name} to ${match.skill.provider} source ${sourceReferenceLabel(match.skill)}. Future update checks can use this provenance.`);
 }
 
 async function handleAutoBindSources(ctx: ExtensionCommandContext, services: CommandServices): Promise<void> {
@@ -303,15 +320,8 @@ async function handleAutoBindSources(ctx: ExtensionCommandContext, services: Com
   }
 
   const plan = buildBulkBindSourcePlan(currentSnapshot, report.bindings);
-  const planText = `${summary}
-
-${formatPlan(plan)}`;
-  if (!plan.canApply) {
-    notify(ctx, planText, "warning");
-    return;
-  }
-
-  await confirmAndApplyPlan(ctx, "Bind all high-confidence sources?", planText, () => {
+  const planText = `${summary}\n\n${formatPlan(plan)}`;
+  await presentAndApplyPlan(ctx, "Bind all high-confidence sources?", plan, planText, () => {
     applyBulkBindSourcePlan(plan, currentSnapshot, report.bindings, { confirmToken: plan.confirmationToken ?? "" });
     notify(ctx, `Bound provider-source metadata for ${String(plan.operations.length)} local skill${plan.operations.length === 1 ? "" : "s"}. Skipped ${String(report.skipped.length)} low-confidence or unmatched skill${report.skipped.length === 1 ? "" : "s"}.`, "info");
   });
@@ -325,12 +335,7 @@ async function handleInstallById(ctx: ExtensionCommandContext, services: Command
 
   const plan = buildInstallPreviewPlan(services.config, skillId);
   const planText = formatPlan(plan);
-  if (!plan.canApply) {
-    notify(ctx, planText, "warning");
-    return;
-  }
-
-  await confirmAndApplyPlan(ctx, "Install skill?", planText, async () => {
+  await presentAndApplyPlan(ctx, "Install skill?", plan, planText, async () => {
     await applyInstallPlan(plan, services.config, services.runner, { confirmToken: plan.confirmationToken ?? "" });
     notify(ctx, `Installed ${skillId}. Run /reload to refresh available skills.`, "info");
   });
@@ -447,38 +452,21 @@ async function handleUpdate(ctx: ExtensionCommandContext, services: CommandServi
 
   const plan = buildUpdateApplyPlan(report, result.item.name);
   const planText = `${reportText}\n\n${formatPlan(plan)}`;
-  if (!plan.canApply) {
-    notify(ctx, planText, "warning");
-    return;
-  }
-
-  await confirmAndApplyPlan(ctx, "Apply skill update?", planText, async () => {
+  await presentAndApplyPlan(ctx, "Apply skill update?", plan, planText, async () => {
     await applyUpdatePlan(plan, currentSnapshot, services.config, { confirmToken: plan.confirmationToken ?? "" });
     notify(ctx, `Updated ${plan.confirmationToken ?? result.item.name}. Run /reload to refresh available skills.`, "info");
   });
 }
 
 async function handleRemove(ctx: ExtensionCommandContext, services: CommandServices): Promise<void> {
-  const selection = await selectInventoryItem(
-    ctx,
-    services,
-    "Remove managed local skill",
-    (item) => item.classification === "managed" && item.driftStatus === "clean",
-  );
-  if (!selection) {
-    return;
-  }
-
-  const plan = buildRemovePreviewPlan(selection.snapshot, selection.item.name);
-  const planText = formatPlan(plan);
-  if (!plan.canApply) {
-    notify(ctx, planText, "warning");
-    return;
-  }
-
-  await confirmAndApplyPlan(ctx, "Remove skill?", planText, () => {
+  await handleSelectAndApplyPlan(ctx, services, {
+    title: "Remove managed local skill",
+    filter: (item) => item.classification === "managed" && item.driftStatus === "clean",
+    buildPlan: (snapshot, name) => buildRemovePreviewPlan(snapshot, name),
+    confirmTitle: "Remove skill?",
+    successMessage: (token) => `Removed ${token}. Run /reload to refresh available skills.`,
+  }, (plan) => {
     applyRemovePlan(plan, services.config, { confirmToken: plan.confirmationToken ?? "" });
-    notify(ctx, `Removed ${plan.confirmationToken ?? selection.item.name}. Run /reload to refresh available skills.`, "info");
   });
 }
 
@@ -546,27 +534,4 @@ export async function openSkillHubWorkspace(ctx: ExtensionCommandContext, servic
       return;
     }
   }
-}
-
-export function registerSkillHubCommand(pi: ExtensionAPI, services: CommandServices): void {
-  pi.registerCommand("skill-hub", {
-    description: "Open the Skill Hub modal for skill search, inventory, and preview-first management.",
-    handler: async (args, ctx) => {
-      services.logger.log("command", { modal: true, args: args.trim().length > 0 });
-      try {
-        if (!ctx.hasUI) {
-          notify(ctx, "/skill-hub requires interactive TUI mode because subcommands are managed inside the modal.", "warning");
-          return;
-        }
-        if (args.trim().length > 0) {
-          notify(ctx, "Skill Hub subcommands moved into the /skill-hub modal. Opening the modal instead.", "info");
-        }
-        await openSkillHubWorkspace(ctx, services);
-      } catch (error) {
-        const message = getErrorMessage(error);
-        services.logger.log("command error", { modal: true, message });
-        notify(ctx, message, "error");
-      }
-    },
-  });
 }

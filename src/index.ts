@@ -7,13 +7,17 @@ import { EXTENSION_NAME } from "./constants.js";
 
 export default function piSkillHubExtension(pi: ExtensionAPI): void {
   const loaded = loadConfig();
+  if (!loaded.config.enabled) {
+    return;
+  }
+
   const logger = createDebugLogger(loaded.config);
   const runner = createPiCommandRunner(pi);
   const services = { config: loaded.config, runner, logger };
 
   registerSkillHubCommand(pi, services);
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", (_event, ctx) => {
     logger.log("session_start", { warnings: loaded.warnings.length });
     for (const warning of loaded.warnings) {
       ctx.ui.notify(`${EXTENSION_NAME}: ${warning}`, "warning");

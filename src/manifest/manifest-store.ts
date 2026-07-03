@@ -4,7 +4,7 @@ import { MANIFEST_PATH, MANIFEST_VERSION } from "../constants.js";
 import type { ProvenanceEntry, ProvenanceManifest, SkillFingerprint } from "../types.js";
 import { getErrorMessage, ManifestValidationError } from "../utils/errors.js";
 
-function emptyManifest(): ProvenanceManifest {
+export function emptyManifest(): ProvenanceManifest {
   return {
     version: MANIFEST_VERSION,
     updatedAt: new Date(0).toISOString(),
@@ -12,11 +12,18 @@ function emptyManifest(): ProvenanceManifest {
   };
 }
 
-function isFingerprint(value: unknown): value is SkillFingerprint {
+function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+function isFingerprint(value: unknown): value is SkillFingerprint {
+  const record = asRecord(value);
+  if (!record) {
     return false;
   }
-  const record = value as Record<string, unknown>;
   return (
     record.algorithm === "sha256" &&
     typeof record.digest === "string" &&
@@ -26,10 +33,10 @@ function isFingerprint(value: unknown): value is SkillFingerprint {
 }
 
 function isEntry(value: unknown): value is ProvenanceEntry {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  const record = asRecord(value);
+  if (!record) {
     return false;
   }
-  const record = value as Record<string, unknown>;
   const provenance = record.provenance;
   return (
     typeof record.name === "string" &&

@@ -8,13 +8,22 @@ import type {
 } from "../types.js";
 import { parseSkillsShReference, parseSkillsShUrl, skillsShDetailUrl, type SkillsShSource } from "../providers/skills-sh-identifiers.js";
 import { extractSkillsShMarkdownFromPayload, parseSkillsShJsonObject, skillsShDownloadUrl } from "../providers/skills-sh-download.js";
+import { parseCompactNumberStrict } from "../providers/provider-numbers.js";
 import { githubRequestHeaders } from "../utils/github-http.js";
+import { collectHttpResponse, optionalResponseBody } from "../utils/http-stream.js";
 import { parseGithubSourceUrl, rawGithubSkillMarkdownUrl, type GithubSource } from "../utils/source-reference.js";
 import { sanitizeTerminalText } from "../utils/terminal-text.js";
 
 const USER_AGENT = "pi-skill-hub/0.1.0";
 const PREVIEW_TIMEOUT_MS = 8_000;
 const AUDIT_LABELS = ["Agent Trust Hub", "Socket", "Snyk"] as const;
+/**
+ * Maximum allowed length for a dynamic label pattern in {@link parseLabeledCompactNumber}.
+ * Patterns above this limit are rejected (returning `undefined`) to mitigate ReDoS risk from
+ * oversized attacker-controlled labelPattern inputs. The largest legitimate internal label
+ * pattern is ~20 chars (`weekly\\s+installs?`), so 200 provides ample headroom.
+ */
+const MAX_LABEL_PATTERN_LENGTH = 200;
 
 interface PreviewHttpRequest {
   url: URL;
@@ -29,20 +38,6 @@ interface PreviewHttpResponse {
 }
 
 export type PreviewHttpClient = (request: PreviewHttpRequest) => Promise<PreviewHttpResponse>;
-
-function parseCompactNumber(value: string): number | undefined {
-  const normalized = value.trim().replace(/,/gu, "").toUpperCase();
-  const match = normalized.match(/^(\d+(?:\.\d+)?)([KMB])?$/u);
-  if (!match) {
-    const parsed = Number.parseInt(normalized.replace(/[^\d]/gu, ""), 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-  }
-
-  const amount = Number.parseFloat(match[1] ?? "0");
-  const suffix = match[2];
-  const multiplier = suffix === "K" ? 1_000 : suffix === "M" ? 1_000_000 : suffix === "B" ? 1_000_000_000 : 1;
-  return Math.round(amount * multiplier);
-}
 
 function metadataStatus(metadata: Omit<SkillPreviewMetadata, "status">): SkillPreviewMetadata["status"] {
   const hasWeeklyInstalls = metadata.weeklyInstalls !== undefined;
@@ -95,11 +90,7 @@ function defaultHttpClient(requestOptions: PreviewHttpRequest): Promise<PreviewH
         headers: githubRequestHeaders(requestOptions.url, requestOptions.accept, USER_AGENT, requestOptions.githubApiKey),
       },
       (res) => {
-        const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
-        res.on("end", () => {
-          resolve({ statusCode: res.statusCode ?? 500, body: Buffer.concat(chunks).toString("utf-8") });
-        });
+        collectHttpResponse(res, resolve);
       },
     );
     req.setTimeout(requestOptions.timeoutMs, () => {
@@ -116,11 +107,7 @@ export function createPreviewHttpClient(githubApiKey?: string | undefined): Prev
 
 async function requestOptionalText(url: URL, accept: string, httpClient: PreviewHttpClient): Promise<string | undefined> {
   try {
-    const response = await httpClient({ url, accept, timeoutMs: PREVIEW_TIMEOUT_MS });
-    if (response.statusCode < 200 || response.statusCode >= 300 || response.body.trim().length === 0) {
-      return undefined;
-    }
-    return response.body;
+    return optionalResponseBody(await httpClient({ url, accept, timeoutMs: PREVIEW_TIMEOUT_MS }));
   } catch {
     return undefined;
   }
@@ -253,9 +240,12 @@ function visibleTextFromHtml(html: string): string {
 }
 
 function parseLabeledCompactNumber(text: string, labelPattern: string): number | undefined {
-  const pattern = new RegExp(`${labelPattern}\\s*[:\\-]?\\s*([\\d,.]+\\s*[KMB]?)`, "iu");
+  if (labelPattern.length > MAX_LABEL_PATTERN_LENGTH) {
+    return undefined;
+  }
+  const pattern = new RegExp(`${labelPattern}\\s*[:\\-]?\\s*([\\d,.]+\\s*[KMB]?)`, "iu"); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- labelPattern is an internal constant, length-bounded above, and used only against short preview metadata text.
   const match = text.match(pattern);
-  return match?.[1] ? parseCompactNumber(match[1].replace(/\s+/gu, "")) : undefined;
+  return match?.[1] ? parseCompactNumberStrict(match[1].replace(/\s+/gu, "")) : undefined;
 }
 
 export function parseWeeklyInstallsFromText(text: string): number | undefined {
@@ -274,7 +264,7 @@ export function parseGithubStarsFromText(text: string): number | undefined {
   ];
   for (const pattern of patterns) {
     const match = text.match(pattern);
-    const stars = match?.[1] ? parseCompactNumber(match[1].replace(/\s+/gu, "")) : undefined;
+    const stars = match?.[1] ? parseCompactNumberStrict(match[1].replace(/\s+/gu, "")) : undefined;
     if (stars !== undefined) {
       return stars;
     }
@@ -303,7 +293,11 @@ function escapedLabelPattern(label: string): string {
 export function parseSecurityAuditsFromText(text: string): SkillPreviewAudit[] {
   const audits: SkillPreviewAudit[] = [];
   for (const label of AUDIT_LABELS) {
-    const pattern = new RegExp(`${escapedLabelPattern(label)}.{0,80}?\\b(Pass(?:ed)?|Fail(?:ed)?|Warning|Unknown)\\b`, "iu");
+    const escaped = escapedLabelPattern(label);
+    if (escaped.length > MAX_LABEL_PATTERN_LENGTH) {
+      continue;
+    }
+    const pattern = new RegExp(`${escaped}.{0,80}?\\b(Pass(?:ed)?|Fail(?:ed)?|Warning|Unknown)\\b`, "iu"); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- escaped is derived from the internal AUDIT_LABELS constant; each part is escaped via replace(/[.*+?^${}()|[\]\\]/g) and length-bounded above.
     const match = text.match(pattern);
     if (match?.[1]) {
       audits.push({ label, status: normalizedAuditStatus(match[1]) });

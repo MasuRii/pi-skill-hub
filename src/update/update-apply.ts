@@ -7,20 +7,11 @@ import { loadManifest, saveManifest, upsertManifestEntry } from "../manifest/man
 import type { InventoryItem, InventorySnapshot, SafetyPlan } from "../types.js";
 import { SkillHubError } from "../utils/errors.js";
 import { isPathInside } from "../utils/path-utils.js";
-import { assertPlanPathIsLocal } from "../plans/plans.js";
+import { assertConfirmed, assertPlanPathIsLocal } from "../plans/plans.js";
 import type { ApplyOptions } from "../plans/apply.js";
 import { preflightUpdateCandidate, type StageProviderContent } from "./update-checker.js";
 import { hasDiff } from "./file-diff.js";
 import { stageProviderContent } from "./provider-content.js";
-
-function assertConfirmed(plan: SafetyPlan, options: ApplyOptions): void {
-  if (!plan.canApply) {
-    throw new SkillHubError("This update plan cannot be applied safely.");
-  }
-  if (!plan.confirmationToken || options.confirmToken !== plan.confirmationToken) {
-    throw new SkillHubError(`Confirmation token mismatch. Expected '${plan.confirmationToken ?? ""}'.`);
-  }
-}
 
 function assertCleanManagedUpdateTarget(item: InventoryItem): void {
   const preflight = preflightUpdateCandidate(item);
@@ -73,7 +64,7 @@ export async function applyUpdatePlan(
   options: ApplyOptions,
   stageContent: StageProviderContent = stageProviderContent,
 ): Promise<void> {
-  assertConfirmed(plan, options);
+  assertConfirmed(plan, options.confirmToken);
   const targetName = plan.confirmationToken;
   if (!targetName) {
     throw new SkillHubError("Update plan did not include a confirmation token.");

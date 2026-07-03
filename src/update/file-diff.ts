@@ -1,35 +1,11 @@
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { readFileSync, statSync } from "node:fs";
 import type { UpdateDiffSummary } from "../types.js";
+import { walkSkillFiles } from "../utils/file-traversal.js";
 
 interface FileDigest {
   path: string;
   digest: string;
-}
-
-const EXCLUDED_DIRECTORIES = new Set([".git", "node_modules"]);
-
-function collectDigests(root: string, current: string, digests: Map<string, string>): void {
-  if (!existsSync(current)) {
-    return;
-  }
-  const entries = readdirSync(current, { withFileTypes: true });
-  for (const entry of entries) {
-    const absolutePath = join(current, entry.name);
-    if (entry.isDirectory()) {
-      if (!EXCLUDED_DIRECTORIES.has(entry.name)) {
-        collectDigests(root, absolutePath, digests);
-      }
-      continue;
-    }
-    if (!entry.isFile()) {
-      continue;
-    }
-    const hash = createHash("sha256");
-    hash.update(readFileSync(absolutePath));
-    digests.set(relative(root, absolutePath).replace(/\\/g, "/"), hash.digest("hex"));
-  }
 }
 
 function readFileDigestMap(root: string): Map<string, string> {
@@ -38,7 +14,11 @@ function readFileDigestMap(root: string): Map<string, string> {
     throw new Error(`Cannot diff non-directory path: ${root}`);
   }
   const digests = new Map<string, string>();
-  collectDigests(root, root, digests);
+  for (const entry of walkSkillFiles(root)) {
+    const hash = createHash("sha256");
+    hash.update(readFileSync(entry.absolutePath));
+    digests.set(entry.relativePath, hash.digest("hex"));
+  }
   return digests;
 }
 

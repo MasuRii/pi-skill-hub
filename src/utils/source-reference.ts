@@ -1,5 +1,7 @@
 import type { ProvenanceEntry, ProviderId, SkillSearchResult } from "../types.js";
 import {
+  httpsPathSegments,
+  isSafeSegment,
   parseSkillsShIdentifier,
   parseSkillsShReference,
   parseSkillsShUrl,
@@ -37,20 +39,6 @@ export interface SourceReferenceMetadata {
   readonly sourcePath?: string | undefined;
 }
 
-const SAFE_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/u;
-
-function isSafeSegment(segment: string | undefined): segment is string {
-  return Boolean(segment && segment !== "." && segment !== ".." && SAFE_SEGMENT_PATTERN.test(segment));
-}
-
-function safeDecodeURIComponent(value: string): string | undefined {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return undefined;
-  }
-}
-
 function pathFromSegments(segments: readonly string[]): string | undefined {
   return segments.length > 0 ? segments.join("/") : undefined;
 }
@@ -76,14 +64,10 @@ export function parseGithubSourceUrl(value: string | undefined): GithubSource | 
     return undefined;
   }
 
-  if (url.protocol !== "https:" || url.hostname !== "github.com") {
+  const pathSegments = httpsPathSegments(url, "github.com");
+  if (!pathSegments) {
     return undefined;
   }
-
-  const pathSegments = url.pathname
-    .split("/")
-    .filter(Boolean)
-    .map((segment) => safeDecodeURIComponent(segment));
   const [owner, repoWithSuffix, sourceKind, branch, ...rawSourcePath] = pathSegments;
   const repo = repoWithSuffix?.replace(/\.git$/iu, "");
   if (!isSafeSegment(owner) || !isSafeSegment(repo)) {
@@ -162,7 +146,7 @@ export function sourceReferenceFromGithubSource(source: GithubSource, provider: 
   };
 }
 
-function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
+export function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
   return values.find((value) => value !== undefined && value.trim().length > 0)?.trim();
 }
 

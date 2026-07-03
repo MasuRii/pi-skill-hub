@@ -1,4 +1,5 @@
 import { posix, relative, resolve, sep, win32 } from "node:path";
+import { SkillHubError } from "./errors.js";
 
 export interface SafeLocalSkillPath {
   skillName: string;
@@ -73,4 +74,18 @@ export function resolveSafeLocalSkillPath(localSkillRoot: string, name: string):
 
 export function toDisplayPath(pathValue: string): string {
   return resolve(pathValue);
+}
+
+/**
+ * Resolves `relativePath` against `rootPath` and rejects escapes outside the
+ * root. Throws `SkillHubError` with `errorPrefix` + the offending relative
+ * path when the resolved target leaves the root. Shared by skills.sh download
+ * staging and GitHub provider staging to avoid parallel path-safety helpers.
+ */
+export function safeResolvedPath(rootPath: string, relativePath: string, errorPrefix: string): string {
+  const resolvedPath = resolve(rootPath, relativePath);
+  if (!isPathInside(resolvedPath, rootPath)) {
+    throw new SkillHubError(`${errorPrefix}: ${relativePath}`);
+  }
+  return resolvedPath;
 }

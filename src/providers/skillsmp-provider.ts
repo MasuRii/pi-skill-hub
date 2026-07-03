@@ -1,6 +1,10 @@
 import { request as httpsRequest } from "node:https";
 import type { ProviderId, SearchMode, SkillSearchResult } from "../types.js";
-import { parseGithubSourceUrl, sourceReferenceFromGithubSource, sourceIdentityKey } from "../utils/source-reference.js";
+import { parseGithubSourceUrl, sourceReferenceFromGithubSource, sourceIdentityKey, firstNonEmpty } from "../utils/source-reference.js";
+import { collectHttpResponse } from "../utils/http-stream.js";
+import { deduplicateByKey } from "../utils/collections.js";
+import { numericPopularity } from "./provider-numbers.js";
+import { createSkillProvider } from "./provider-types.js";
 import type { SkillProvider } from "./provider-types.js";
 
 const API_HOST = "skillsmp.com";
@@ -101,32 +105,6 @@ export function extractSkillsMpSkills(payload: unknown): SkillsMpApiSkill[] {
   return skills;
 }
 
-function parseCompactNumber(value: string): number {
-  const normalized = value.trim().toUpperCase();
-  const match = normalized.match(/^(\d+(?:\.\d+)?)([KMB])?$/u);
-  if (!match) {
-    return Number.parseInt(normalized.replace(/[^\d]/gu, ""), 10) || 0;
-  }
-  const amount = Number.parseFloat(match[1] ?? "0");
-  const suffix = match[2];
-  const multiplier = suffix === "K" ? 1_000 : suffix === "M" ? 1_000_000 : suffix === "B" ? 1_000_000_000 : 1;
-  return Math.round(amount * multiplier);
-}
-
-function numericPopularity(value: number | string | undefined): number {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === "string") {
-    return parseCompactNumber(value);
-  }
-  return 0;
-}
-
-function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
-  return values.find((value) => value !== undefined && value.trim().length > 0);
-}
-
 function requestJson(request: SkillsMpRequest): Promise<unknown> {
   const params = new URLSearchParams({ q: request.query, limit: String(request.limit) });
   const headers: Record<string, string> = {
@@ -146,10 +124,7 @@ function requestJson(request: SkillsMpRequest): Promise<unknown> {
         headers,
       },
       (res) => {
-        const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
-        res.on("end", () => {
-          const body = Buffer.concat(chunks).toString("utf-8");
+        collectHttpResponse(res, ({ statusCode, body }) => {
           let parsed: unknown;
           try {
             parsed = JSON.parse(body) as unknown;
@@ -157,8 +132,8 @@ function requestJson(request: SkillsMpRequest): Promise<unknown> {
             reject(new Error("SkillsMP returned invalid JSON."));
             return;
           }
-          if ((res.statusCode ?? 500) >= 400) {
-            reject(new Error(`SkillsMP ${request.mode} request failed with HTTP ${String(res.statusCode ?? 500)}.`));
+          if (statusCode >= 400) {
+            reject(new Error(`SkillsMP ${request.mode} request failed with HTTP ${String(statusCode)}.`));
             return;
           }
           resolve(parsed);
@@ -202,26 +177,16 @@ function toSearchResult(skill: SkillsMpApiSkill): SkillSearchResult | undefined 
 }
 
 function deduplicateProviderResults(skills: readonly SkillSearchResult[]): SkillSearchResult[] {
-  const seen = new Map<string, SkillSearchResult>();
-  for (const skill of skills) {
-    const key = sourceIdentityKey(skill);
-    const existing = seen.get(key);
-    if (!existing || skill.popularity > existing.popularity) {
-      seen.set(key, skill);
-    }
-  }
-  return [...seen.values()];
+  return deduplicateByKey(skills, sourceIdentityKey, (candidate, existing) => candidate.popularity - existing.popularity);
 }
 
 export function createSkillsMpProvider(timeoutMs: number, httpClient: SkillsMpHttpClient = requestJson, configuredApiKey?: string | undefined): SkillProvider {
-  return {
+  return createSkillProvider({
     id: "skillsmp",
     name: "SkillsMP",
     requiresAuth: false,
-    isAvailable(): boolean {
-      return true;
-    },
-    async search(query: string, mode: SearchMode, limit: number): Promise<SkillSearchResult[]> {
+    isAvailable: () => true,
+    search: async (query: string, mode: SearchMode, limit: number): Promise<SkillSearchResult[]> => {
       const key = effectiveApiKey(configuredApiKey);
       if (mode === "ai" && !key) {
         throw new Error("SkillsMP AI search requires apiKeys.skillsMp or SKILLSMP_API_KEY. Use a shorter keyword query or configure the API key for AI search.");
@@ -229,5 +194,5 @@ export function createSkillsMpProvider(timeoutMs: number, httpClient: SkillsMpHt
       const payload = await httpClient({ endpoint: endpointForMode(mode), query, limit, mode, apiKey: key, timeoutMs });
       return deduplicateProviderResults(extractSkillsMpSkills(payload).map(toSearchResult).filter((item): item is SkillSearchResult => Boolean(item))).slice(0, limit);
     },
-  };
+  });
 }

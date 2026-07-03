@@ -1,10 +1,11 @@
 import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import type { SkillsShProviderConfig } from "../config/config.js";
 import { SkillHubError } from "../utils/errors.js";
-import { isPathInside } from "../utils/path-utils.js";
+import { collectHttpResponse, optionalResponseBody } from "../utils/http-stream.js";
+import { safeResolvedPath } from "../utils/path-utils.js";
 import type { SkillsShSource } from "./skills-sh-identifiers.js";
 
 export interface SkillsShHttpRequest {
@@ -21,6 +22,13 @@ export interface SkillsShHttpResponse {
 
 export type SkillsShHttpClient = (request: SkillsShHttpRequest) => Promise<SkillsShHttpResponse>;
 export type SkillsShDownloadHttpClient = SkillsShHttpClient;
+
+/**
+ * Optional skills.sh download/base-url + API-key override. Aliased so the long
+ * `Partial<Pick<...>>` shape is declared once instead of repeated on every
+ * download/stage/install entry point.
+ */
+export type SkillsShDownloadConfig = Partial<Pick<SkillsShProviderConfig, "downloadBaseUrl" | "apiKey">> | undefined;
 
 interface SkillsShDownloadFilePayload {
   path?: string;
@@ -41,7 +49,7 @@ export interface SkillsShDownloadedFile {
 
 export interface SkillsShContentOptions {
   timeoutMs: number;
-  config?: Partial<Pick<SkillsShProviderConfig, "downloadBaseUrl" | "apiKey">> | undefined;
+  config?: SkillsShDownloadConfig;
   httpClient?: SkillsShHttpClient | undefined;
 }
 
@@ -83,14 +91,7 @@ export async function defaultSkillsShHttpClient(requestOptions: SkillsShHttpRequ
         headers,
       },
       (res) => {
-        const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
-        res.on("end", () => {
-          resolvePromise({
-            statusCode: res.statusCode ?? 500,
-            body: Buffer.concat(chunks).toString("utf-8"),
-          });
-        });
+        collectHttpResponse(res, resolvePromise);
       },
     );
     req.setTimeout(requestOptions.timeoutMs, () => {
@@ -216,18 +217,29 @@ export function extractSkillsShMarkdownFromPayload(payload: unknown, source: Ski
   return content && content.trim().length > 0 ? content : undefined;
 }
 
+interface SkillsShDownloadRequestOptions {
+  source: SkillsShSource;
+  timeoutMs: number;
+  httpClient: SkillsShHttpClient;
+  config?: SkillsShDownloadConfig;
+}
+
+async function requestSkillsShDownload(options: SkillsShDownloadRequestOptions): Promise<SkillsShHttpResponse> {
+  return options.httpClient({
+    url: skillsShDownloadUrl(options.source, options.config?.downloadBaseUrl),
+    accept: "application/json",
+    timeoutMs: options.timeoutMs,
+    apiKey: options.config?.apiKey,
+  });
+}
+
 export async function downloadSkillsShSkillFiles(
   source: SkillsShSource,
   timeoutMs: number,
   httpClient: SkillsShHttpClient = defaultSkillsShHttpClient,
-  config?: Partial<Pick<SkillsShProviderConfig, "downloadBaseUrl" | "apiKey">> | undefined,
+  config?: SkillsShDownloadConfig,
 ): Promise<SkillsShDownloadedFile[]> {
-  const response = await httpClient({
-    url: skillsShDownloadUrl(source, config?.downloadBaseUrl),
-    accept: "application/json",
-    timeoutMs,
-    apiKey: config?.apiKey,
-  });
+  const response = await requestSkillsShDownload({ source, timeoutMs, httpClient, config });
   if (response.statusCode < 200 || response.statusCode >= 300) {
     throw new SkillHubError(`skills.sh download failed with HTTP ${String(response.statusCode)} for ${sourceLabel(source)}.`);
   }
@@ -238,26 +250,26 @@ export async function fetchSkillsShMarkdown(
   source: SkillsShSource,
   timeoutMs: number,
   httpClient: SkillsShHttpClient = defaultSkillsShHttpClient,
-  config?: Partial<Pick<SkillsShProviderConfig, "downloadBaseUrl" | "apiKey">> | undefined,
+  config?: SkillsShDownloadConfig,
 ): Promise<string | undefined> {
-  const response = await httpClient({
-    url: skillsShDownloadUrl(source, config?.downloadBaseUrl),
-    accept: "application/json",
-    timeoutMs,
-    apiKey: config?.apiKey,
-  });
-  if (response.statusCode < 200 || response.statusCode >= 300 || response.body.trim().length === 0) {
+  const response = await requestSkillsShDownload({ source, timeoutMs, httpClient, config });
+  const body = optionalResponseBody(response);
+  if (!body) {
     return undefined;
   }
-  return extractSkillsShMarkdownFromPayload(parseSkillsShJsonObject(response.body, `download ${sourceLabel(source)}`), source);
+  return extractSkillsShMarkdownFromPayload(parseSkillsShJsonObject(body, `download ${sourceLabel(source)}`), source);
 }
 
 function safeOutputPath(stagingPath: string, relativePath: string): string {
-  const outputPath = resolve(stagingPath, relativePath);
-  if (!isPathInside(outputPath, stagingPath)) {
-    throw new SkillHubError(`Refusing to write unsafe skills.sh download path: ${relativePath}`);
+  return safeResolvedPath(stagingPath, relativePath, "Refusing to write unsafe skills.sh download path");
+}
+
+function writeDownloadedFiles(files: readonly SkillsShDownloadedFile[], rootPath: string): void {
+  for (const file of files) {
+    const outputPath = safeOutputPath(rootPath, file.relativePath);
+    mkdirSync(dirname(outputPath), { recursive: true });
+    writeFileSync(outputPath, file.content, "utf-8");
   }
-  return outputPath;
 }
 
 export function writeDownloadedSkillDirectory(files: readonly SkillsShDownloadedFile[], targetPath: string): void {
@@ -266,11 +278,7 @@ export function writeDownloadedSkillDirectory(files: readonly SkillsShDownloaded
   const stagingPath = mkdtempSync(join(parentPath, ".pi-skill-hub-install-"));
 
   try {
-    for (const file of files) {
-      const outputPath = safeOutputPath(stagingPath, file.relativePath);
-      mkdirSync(dirname(outputPath), { recursive: true });
-      writeFileSync(outputPath, file.content, "utf-8");
-    }
+    writeDownloadedFiles(files, stagingPath);
 
     if (existsSync(targetPath)) {
       throw new SkillHubError(`Refusing to install over existing skill directory: ${targetPath}`);
@@ -284,28 +292,11 @@ export function writeDownloadedSkillDirectory(files: readonly SkillsShDownloaded
   }
 }
 
-export async function stageSkillsShSkillDirectory(
-  source: SkillsShSource,
-  targetPath: string,
-  timeoutMs: number,
-  httpClient?: SkillsShHttpClient | undefined,
-  config?: Partial<Pick<SkillsShProviderConfig, "downloadBaseUrl" | "apiKey">> | undefined,
-): Promise<void> {
-  const files = await downloadSkillsShSkillFiles(source, timeoutMs, httpClient ?? defaultSkillsShHttpClient, config);
-  for (const file of files) {
-    const outputPath = safeOutputPath(targetPath, file.relativePath);
-    mkdirSync(dirname(outputPath), { recursive: true });
-    writeFileSync(outputPath, file.content, "utf-8");
-  }
+export async function stageSkillsShSkillDirectory(source: SkillsShSource, targetPath: string, timeoutMs: number, httpClient?: SkillsShHttpClient, config?: SkillsShDownloadConfig): Promise<void> {
+  writeDownloadedFiles(await downloadSkillsShSkillFiles(source, timeoutMs, httpClient ?? defaultSkillsShHttpClient, config), targetPath);
 }
 
-export async function installSkillsShSkillDirectory(
-  source: SkillsShSource,
-  targetPath: string,
-  timeoutMs: number,
-  httpClient?: SkillsShHttpClient | undefined,
-  config?: Partial<Pick<SkillsShProviderConfig, "downloadBaseUrl" | "apiKey">> | undefined,
-): Promise<void> {
+export async function installSkillsShSkillDirectory(source: SkillsShSource, targetPath: string, timeoutMs: number, httpClient?: SkillsShHttpClient, config?: SkillsShDownloadConfig): Promise<void> {
   const files = await downloadSkillsShSkillFiles(source, timeoutMs, httpClient ?? defaultSkillsShHttpClient, config);
   writeDownloadedSkillDirectory(files, targetPath);
 }

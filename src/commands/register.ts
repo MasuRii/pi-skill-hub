@@ -1,10 +1,7 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { CommandServices } from "./commands.js";
 import { getErrorMessage } from "../utils/errors.js";
-
-function notify(ctx: ExtensionCommandContext, message: string, level: "info" | "warning" | "error" = "info"): void {
-  ctx.ui.notify(message, level);
-}
+import { notify } from "./notify.js";
 
 export function registerSkillHubCommand(pi: ExtensionAPI, services: CommandServices): void {
   pi.registerCommand("skill-hub", {

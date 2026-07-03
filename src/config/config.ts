@@ -28,6 +28,7 @@ export interface SkillHubApiKeys {
 }
 
 export interface SkillHubConfig {
+  enabled: boolean;
   debug: boolean;
   localSkillRoot: string;
   externalSkillRoots: string[];
@@ -48,6 +49,7 @@ export interface ConfigLoadResult {
 }
 
 type RawConfig = Partial<{
+  enabled: unknown;
   debug: unknown;
   localSkillRoot: unknown;
   externalSkillRoots: unknown;
@@ -68,6 +70,7 @@ const DEFAULT_SKILLS_SH_CONFIG: SkillsShProviderConfig = {
 };
 
 const DEFAULT_CONFIG: SkillHubConfig = {
+  enabled: true,
   debug: false,
   localSkillRoot: DEFAULT_LOCAL_SKILL_ROOT,
   externalSkillRoots: DEFAULT_EXTERNAL_SKILL_ROOTS,
@@ -259,6 +262,7 @@ export function loadConfig(pathValue = CONFIG_PATH): ConfigLoadResult {
 
   return {
     config: {
+      enabled: booleanValue(raw.enabled, DEFAULT_CONFIG.enabled, "enabled", warnings),
       debug: booleanValue(raw.debug, DEFAULT_CONFIG.debug, "debug", warnings),
       localSkillRoot: stringPathValue(raw.localSkillRoot, DEFAULT_CONFIG.localSkillRoot, "localSkillRoot", warnings),
       externalSkillRoots: stringPathArrayValue(

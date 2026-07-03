@@ -16,7 +16,8 @@ import {
   type SkillsShSource,
 } from "./skills-sh-identifiers.js";
 import { sourceReferenceFromSkillsShSource } from "../utils/source-reference.js";
-import type { SkillProvider } from "./provider-types.js";
+import { numericPopularity, parseCompactNumber } from "./provider-numbers.js";
+import { createSkillProvider, type SkillProvider } from "./provider-types.js";
 
 interface SkillsShRawResult {
   id?: string;
@@ -59,19 +60,6 @@ function runtimeConfig(timeoutMs: number, config?: Partial<SkillsShProviderConfi
     ...config,
     timeoutMs,
   };
-}
-
-function parseCompactNumber(value: string): number {
-  const normalized = value.trim().replace(/,/gu, "").toUpperCase();
-  const match = normalized.match(/^(\d+(?:\.\d+)?)([KMB])?$/u);
-  if (!match) {
-    return Number.parseInt(normalized.replace(/[^\d]/gu, ""), 10) || 0;
-  }
-
-  const amount = Number.parseFloat(match[1] ?? "0");
-  const suffix = match[2];
-  const multiplier = suffix === "K" ? 1_000 : suffix === "M" ? 1_000_000 : suffix === "B" ? 1_000_000_000 : 1;
-  return Math.round(amount * multiplier);
 }
 
 function normalizeSourceRepo(source: string | undefined): string | undefined {
@@ -128,16 +116,6 @@ function resultFromSource(
 function resultFromIdentifier(identifier: string, installs: number, description?: string, url?: string): SkillSearchResult | undefined {
   const source = parseSkillsShIdentifier(identifier);
   return source ? resultFromSource(source, installs, description, url) : undefined;
-}
-
-function numericPopularity(value: number | string | undefined): number {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === "string") {
-    return parseCompactNumber(value);
-  }
-  return 0;
 }
 
 function jsonItemsFromPayload(parsed: unknown): unknown[] | undefined {
@@ -326,18 +304,16 @@ export function createSkillsShProvider(
   httpClient: SkillsShHttpClient = defaultSkillsShHttpClient,
 ): SkillProvider {
   const providerConfig = runtimeConfig(timeoutMs, config);
-  return {
+  return createSkillProvider({
     id: "skills-sh",
     name: providerConfig.transport === "cli" ? "skills.sh (CLI compatibility)" : "skills.sh",
     requiresAuth: false,
-    isAvailable(): boolean {
-      return providerConfig.transport === "api" || providerConfig.cliCompatibility;
-    },
-    async search(query: string, _mode: SearchMode, limit: number): Promise<SkillSearchResult[]> {
+    isAvailable: () => providerConfig.transport === "api" || providerConfig.cliCompatibility,
+    search: async (query: string, _mode: SearchMode, limit: number): Promise<SkillSearchResult[]> => {
       if (providerConfig.transport === "cli") {
         return searchWithCli(runner, query, limit, providerConfig);
       }
       return searchWithApi(query, limit, providerConfig, httpClient);
     },
-  };
+  });
 }

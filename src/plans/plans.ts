@@ -6,6 +6,7 @@ import type { InventoryItem, InventorySnapshot, SafetyPlan, SkillSearchResult, U
 import type { SourceDiscoveryBinding, SourceDiscoveryMatch } from "../discovery/source-discovery.js";
 import { MIN_AUTO_BIND_SOURCE_SCORE, MIN_BIND_SOURCE_SCORE } from "../discovery/source-discovery.js";
 import { isPathInside, resolveSafeLocalSkillPath } from "../utils/path-utils.js";
+import { SkillHubError } from "../utils/errors.js";
 import { createInstallDescriptor, skillNameFromInstallId } from "./install-descriptor.js";
 import { sourceReferenceLabel } from "../utils/source-reference.js";
 
@@ -24,8 +25,73 @@ function safePlan(action: SafetyPlan["action"], title: string): SafetyPlan {
   };
 }
 
+/**
+ * Shared confirmation-token guard used by both {@link assertConfirmed} in apply.ts
+ * and update-apply.ts. Throws `SkillHubError` when the supplied token does not
+ * match the plan's confirmation token.
+ */
+export function assertConfirmationToken(plan: SafetyPlan, confirmToken: string): void {
+  if (!plan.confirmationToken || confirmToken !== plan.confirmationToken) {
+    throw new SkillHubError(`Confirmation token mismatch. Expected '${plan.confirmationToken ?? ""}'.`);
+  }
+}
+
+/**
+ * Assert that a safety plan is confirmed and can be applied.
+ *
+ * Consolidated from per-module copies in apply.ts and update-apply.ts.
+ * Reports blocked operation reasons when present so callers see why a plan
+ * cannot be applied; otherwise emits a generic update-plan message.
+ */
+export function assertConfirmed(plan: SafetyPlan, confirmToken: string): void {
+  if (!plan.canApply) {
+    const blockedReasons = plan.blocked
+      .map((operation) => `${operation.description} (${operation.target})`)
+      .join("; ");
+    const detail = blockedReasons ? ` Blocked: ${blockedReasons}` : "";
+    throw new SkillHubError(`This plan cannot be applied safely.${detail}`);
+  }
+  assertConfirmationToken(plan, confirmToken);
+}
+
+function blockMissingItem(plan: SafetyPlan, target: string): SafetyPlan {
+  plan.blocked.push({ kind: "skip", target, description: "Skill was not found in local inventory.", protected: true });
+  return plan;
+}
+
+function blockFingerprintMissing(plan: SafetyPlan, item: InventoryItem): SafetyPlan {
+  plan.blocked.push({ kind: "skip", target: item.path, description: "Skill fingerprint could not be computed.", protected: true });
+  return plan;
+}
+
 function isMutableManagedItem(item: InventoryItem): boolean {
   return item.rootType === "local" && item.classification === "managed" && item.driftStatus === "clean";
+}
+
+/**
+ * Shared bind-source eligibility guard used by {@link buildBindSourcePlan} and
+ * {@link buildBulkBindSourcePlan}. Pushes a `skip` block entry and returns
+ * `false` when the item cannot be bound (non-local, missing fingerprint,
+ * already managed, or below the confidence threshold); otherwise `true`.
+ */
+function checkBindSourceEligibility(plan: SafetyPlan, item: InventoryItem, score: number, minScore: number, lowScoreDescription: string): boolean {
+  if (item.rootType !== "local" || item.classification === "missing") {
+    plan.blocked.push({ kind: "skip", target: item.path, description: "Only existing local skills can be bound to a provider source.", protected: true });
+    return false;
+  }
+  if (!item.fingerprint) {
+    blockFingerprintMissing(plan, item);
+    return false;
+  }
+  if (item.classification === "managed" && item.manifestEntry?.provider && item.manifestEntry.sourceId) {
+    plan.blocked.push({ kind: "skip", target: item.path, description: "Skill already has provider provenance metadata.", protected: true });
+    return false;
+  }
+  if (score < minScore) {
+    plan.blocked.push({ kind: "skip", target: item.path, description: lowScoreDescription, protected: true });
+    return false;
+  }
+  return true;
 }
 
 export function buildAdoptPlan(snapshot: Snapshot, target: string): SafetyPlan {
@@ -34,8 +100,7 @@ export function buildAdoptPlan(snapshot: Snapshot, target: string): SafetyPlan {
   plan.confirmationToken = target;
 
   if (!item) {
-    plan.blocked.push({ kind: "skip", target, description: "Skill was not found in local inventory.", protected: true });
-    return plan;
+    return blockMissingItem(plan, target);
   }
   plan.confirmationToken = item.name;
 
@@ -48,8 +113,7 @@ export function buildAdoptPlan(snapshot: Snapshot, target: string): SafetyPlan {
     return plan;
   }
   if (!item.fingerprint) {
-    plan.blocked.push({ kind: "skip", target: item.path, description: "Skill fingerprint could not be computed.", protected: true });
-    return plan;
+    return blockFingerprintMissing(plan, item);
   }
 
   plan.operations.push({ kind: "write_manifest", target: item.path, description: "Record current local fingerprint as adopted provenance.", protected: false });
@@ -105,30 +169,11 @@ export function buildBindSourcePlan(snapshot: Snapshot, target: string, match: S
   plan.confirmationToken = `${target}:${match.skill.provider}:${match.skill.id}`;
 
   if (!item) {
-    plan.blocked.push({ kind: "skip", target, description: "Skill was not found in local inventory.", protected: true });
-    return plan;
+    return blockMissingItem(plan, target);
   }
   plan.confirmationToken = `${item.name}:${match.skill.provider}:${match.skill.id}`;
 
-  if (item.rootType !== "local" || item.classification === "missing") {
-    plan.blocked.push({ kind: "skip", target: item.path, description: "Only existing local skills can be bound to a provider source.", protected: true });
-    return plan;
-  }
-  if (!item.fingerprint) {
-    plan.blocked.push({ kind: "skip", target: item.path, description: "Skill fingerprint could not be computed.", protected: true });
-    return plan;
-  }
-  if (item.classification === "managed" && item.manifestEntry?.provider && item.manifestEntry.sourceId) {
-    plan.blocked.push({ kind: "skip", target: item.path, description: "Skill already has provider provenance metadata.", protected: true });
-    return plan;
-  }
-  if (match.score < MIN_BIND_SOURCE_SCORE) {
-    plan.blocked.push({
-      kind: "skip",
-      target: item.path,
-      description: `Best source match confidence is too low (${Math.round(match.score * 100).toString()}%).`,
-      protected: true,
-    });
+  if (!checkBindSourceEligibility(plan, item, match.score, MIN_BIND_SOURCE_SCORE, `Best source match confidence is too low (${Math.round(match.score * 100).toString()}%).`)) {
     return plan;
   }
 
@@ -156,7 +201,7 @@ export function buildBulkBindSourcePlan(snapshot: Snapshot, bindings: readonly S
   for (const binding of bindings) {
     const item = findInventoryItem(snapshot, binding.item.name);
     if (!item) {
-      plan.blocked.push({ kind: "skip", target: binding.item.name, description: "Skill was not found in local inventory.", protected: true });
+      blockMissingItem(plan, binding.item.name);
       continue;
     }
     if (seenTargets.has(item.path)) {
@@ -164,25 +209,7 @@ export function buildBulkBindSourcePlan(snapshot: Snapshot, bindings: readonly S
       continue;
     }
     seenTargets.add(item.path);
-    if (item.rootType !== "local" || item.classification === "missing") {
-      plan.blocked.push({ kind: "skip", target: item.path, description: "Only existing local skills can be bound to a provider source.", protected: true });
-      continue;
-    }
-    if (!item.fingerprint) {
-      plan.blocked.push({ kind: "skip", target: item.path, description: "Skill fingerprint could not be computed.", protected: true });
-      continue;
-    }
-    if (item.classification === "managed" && item.manifestEntry?.provider && item.manifestEntry.sourceId) {
-      plan.blocked.push({ kind: "skip", target: item.path, description: "Skill already has provider provenance metadata.", protected: true });
-      continue;
-    }
-    if (binding.match.score < MIN_AUTO_BIND_SOURCE_SCORE) {
-      plan.blocked.push({
-        kind: "skip",
-        target: item.path,
-        description: `Best source match confidence is below the auto-bind threshold (${Math.round(binding.match.score * 100).toString()}%).`,
-        protected: true,
-      });
+    if (!checkBindSourceEligibility(plan, item, binding.match.score, MIN_AUTO_BIND_SOURCE_SCORE, `Best source match confidence is below the auto-bind threshold (${Math.round(binding.match.score * 100).toString()}%).`)) {
       continue;
     }
     plan.operations.push({

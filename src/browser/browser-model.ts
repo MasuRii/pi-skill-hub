@@ -70,12 +70,15 @@ export function pagedBrowserResults<T>(results: readonly T[], pageIndex: number,
   return results.slice(start, start + safePageSize);
 }
 
+function cycleOption<T extends string>(options: readonly T[], current: T, fallback: T): T {
+  const index = options.indexOf(current);
+  return options[(index + 1) % options.length] ?? fallback;
+}
+
 export function cycleSortMode(current: BrowserSortMode): BrowserSortMode {
-  const index = BROWSER_SORT_MODES.indexOf(current);
-  return BROWSER_SORT_MODES[(index + 1) % BROWSER_SORT_MODES.length] ?? "relevance";
+  return cycleOption(BROWSER_SORT_MODES, current, "relevance");
 }
 
 export function cycleProviderFilter(current: BrowserProviderFilter): BrowserProviderFilter {
-  const index = BROWSER_PROVIDER_FILTERS.indexOf(current);
-  return BROWSER_PROVIDER_FILTERS[(index + 1) % BROWSER_PROVIDER_FILTERS.length] ?? "all";
+  return cycleOption(BROWSER_PROVIDER_FILTERS, current, "all");
 }

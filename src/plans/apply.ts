@@ -3,7 +3,7 @@ import type { SkillHubConfig } from "../config/config.js";
 import { computeSkillFingerprint } from "../inventory/fingerprint.js";
 import { findInventoryItem } from "../inventory/inventory.js";
 import { loadManifest, removeManifestEntry, saveManifest, upsertManifestEntry } from "../manifest/manifest-store.js";
-import type { CommandRunner, InventorySnapshot, ProvenanceEntry, SafetyPlan, SkillSearchResult } from "../types.js";
+import type { CommandRunner, InventoryItem, InventorySnapshot, ProvenanceEntry, SafetyPlan, SkillFingerprint, SkillSearchResult } from "../types.js";
 import type { SourceDiscoveryBinding, SourceDiscoveryMatch } from "../discovery/source-discovery.js";
 import { buildSkillsAddCommand } from "../commands/skills-command.js";
 import { installSkillsShSkillDirectory, type SkillsShDownloadHttpClient } from "../providers/skills-sh-download.js";
@@ -12,7 +12,7 @@ import { resolveSafeLocalSkillPath } from "../utils/path-utils.js";
 import { sourceReferenceFromSkill, sourceReferenceMetadata } from "../utils/source-reference.js";
 import { SkillHubError } from "../utils/errors.js";
 import { createInstallDescriptor } from "./install-descriptor.js";
-import { assertPlanPathIsLocal } from "./plans.js";
+import { assertConfirmed, assertPlanPathIsLocal } from "./plans.js";
 
 export interface ApplyOptions {
   confirmToken: string;
@@ -21,30 +21,21 @@ export interface ApplyOptions {
   skillsShHttpClient?: SkillsShDownloadHttpClient | undefined;
 }
 
-function assertConfirmed(plan: SafetyPlan, options: ApplyOptions): void {
-  if (!plan.canApply) {
-    const blockedReasons = plan.blocked
-      .map((operation) => `${operation.description} (${operation.target})`)
-      .join("; ");
-    const detail = blockedReasons ? ` Blocked: ${blockedReasons}` : "";
-    throw new SkillHubError(`This plan cannot be applied safely.${detail}`);
-  }
-  if (!plan.confirmationToken || options.confirmToken !== plan.confirmationToken) {
-    throw new SkillHubError(`Confirmation token mismatch. Expected '${plan.confirmationToken ?? ""}'.`);
-  }
-}
-
-export function applyAdoptPlan(plan: SafetyPlan, snapshot: InventorySnapshot, options: ApplyOptions): void {
-  assertConfirmed(plan, options);
+function resolveConfirmedManifestTarget(plan: SafetyPlan, options: ApplyOptions, snapshot: InventorySnapshot, planLabel: string, targetLabel: string): { item: InventoryItem; fingerprint: SkillFingerprint } {
+  assertConfirmed(plan, options.confirmToken);
   const target = plan.operations.find((operation) => operation.kind === "write_manifest")?.target;
   if (!target) {
-    throw new SkillHubError("Adopt plan did not include a manifest write operation.");
+    throw new SkillHubError(`${planLabel} did not include a manifest write operation.`);
   }
   const item = findInventoryItem(snapshot, target);
   if (!item || !item.fingerprint) {
-    throw new SkillHubError("Adopt target no longer exists or cannot be fingerprinted.");
+    throw new SkillHubError(`${targetLabel} no longer exists or cannot be fingerprinted.`);
   }
+  return { item, fingerprint: item.fingerprint };
+}
 
+export function applyAdoptPlan(plan: SafetyPlan, snapshot: InventorySnapshot, options: ApplyOptions): void {
+  const { item, fingerprint } = resolveConfirmedManifestTarget(plan, options, snapshot, "Adopt plan", "Adopt target");
   const timestamp = new Date().toISOString();
   const manifest = loadManifest(options.manifestPath);
   const entry: ProvenanceEntry = {
@@ -53,7 +44,7 @@ export function applyAdoptPlan(plan: SafetyPlan, snapshot: InventorySnapshot, op
     provenance: "adopted",
     installedAt: timestamp,
     updatedAt: timestamp,
-    fingerprint: item.fingerprint,
+    fingerprint,
   };
   saveManifest(upsertManifestEntry(manifest, entry), options.manifestPath);
 }
@@ -73,49 +64,44 @@ function sourceUrlFromInstall(skillId: string, sourceSkill: SkillSearchResult | 
   return source ? skillsShDetailUrl(source) : undefined;
 }
 
+function buildBindSourceEntry(item: InventoryItem, skill: SkillSearchResult, fingerprint: SkillFingerprint, existingInstalledAt?: string | undefined): ProvenanceEntry {
+  const descriptor = createInstallDescriptor(skill);
+  const sourceMetadata = sourceReferenceMetadata(sourceReferenceFromSkill(skill));
+  const skillsShSource = skill.provider === "skills-sh" ? parseSkillsShReference(descriptor.sourceId) : undefined;
+  const timestamp = new Date().toISOString();
+  return {
+    name: item.name,
+    localPath: item.path,
+    provenance: "installed",
+    provider: skill.provider,
+    sourceId: descriptor.sourceId,
+    sourceUrl: descriptor.sourceUrl ?? skill.sourceUrl ?? skill.githubUrl ?? skill.installReference,
+    sourceOwner: skillsShSource?.owner ?? sourceMetadata.sourceOwner,
+    sourceRepository: skillsShSource?.repo ?? sourceMetadata.sourceRepository,
+    sourcePath: skillsShSource?.skill ?? sourceMetadata.sourcePath,
+    sourceType: skill.provider === "skills-sh" ? "skills-sh" : undefined,
+    skillPath: skillsShSource?.skill,
+    sourceTransport: skill.provider === "skills-sh" ? "api" : undefined,
+    installedAt: existingInstalledAt ?? timestamp,
+    updatedAt: timestamp,
+    fingerprint,
+  };
+}
+
 export function applyBindSourcePlan(plan: SafetyPlan, snapshot: InventorySnapshot, match: SourceDiscoveryMatch, options: ApplyOptions): void {
-  assertConfirmed(plan, options);
-  const target = plan.operations.find((operation) => operation.kind === "write_manifest")?.target;
-  if (!target) {
-    throw new SkillHubError("Bind-source plan did not include a manifest write operation.");
-  }
-  const item = findInventoryItem(snapshot, target);
-  if (!item || !item.fingerprint) {
-    throw new SkillHubError("Bind-source target no longer exists or cannot be fingerprinted.");
-  }
+  const { item, fingerprint } = resolveConfirmedManifestTarget(plan, options, snapshot, "Bind-source plan", "Bind-source target");
   const expectedToken = `${item.name}:${match.skill.provider}:${match.skill.id}`;
   if (plan.confirmationToken !== expectedToken) {
     throw new SkillHubError("Bind-source plan does not match the selected provider source.");
   }
 
-  const descriptor = createInstallDescriptor(match.skill);
-  const sourceMetadata = sourceReferenceMetadata(sourceReferenceFromSkill(match.skill));
-  const skillsShSource = match.skill.provider === "skills-sh" ? parseSkillsShReference(descriptor.sourceId) : undefined;
-  const timestamp = new Date().toISOString();
-  const existing = item.manifestEntry;
   const manifest = loadManifest(options.manifestPath);
-  const entry: ProvenanceEntry = {
-    name: item.name,
-    localPath: item.path,
-    provenance: "installed",
-    provider: match.skill.provider,
-    sourceId: descriptor.sourceId,
-    sourceUrl: descriptor.sourceUrl ?? match.skill.sourceUrl ?? match.skill.githubUrl ?? match.skill.installReference,
-    sourceOwner: skillsShSource?.owner ?? sourceMetadata.sourceOwner,
-    sourceRepository: skillsShSource?.repo ?? sourceMetadata.sourceRepository,
-    sourcePath: skillsShSource?.skill ?? sourceMetadata.sourcePath,
-    sourceType: match.skill.provider === "skills-sh" ? "skills-sh" : undefined,
-    skillPath: skillsShSource?.skill,
-    sourceTransport: match.skill.provider === "skills-sh" ? "api" : undefined,
-    installedAt: existing?.installedAt ?? timestamp,
-    updatedAt: timestamp,
-    fingerprint: item.fingerprint,
-  };
+  const entry = buildBindSourceEntry(item, match.skill, fingerprint, item.manifestEntry?.installedAt);
   saveManifest(upsertManifestEntry(manifest, entry), options.manifestPath);
 }
 
 export function applyBulkBindSourcePlan(plan: SafetyPlan, snapshot: InventorySnapshot, bindings: readonly SourceDiscoveryBinding[], options: ApplyOptions): void {
-  assertConfirmed(plan, options);
+  assertConfirmed(plan, options.confirmToken);
   if (plan.confirmationToken !== `bulk-bind-source:${String(bindings.length)}`) {
     throw new SkillHubError("Bulk bind-source plan does not match the selected source bindings.");
   }
@@ -136,28 +122,7 @@ export function applyBulkBindSourcePlan(plan: SafetyPlan, snapshot: InventorySna
       continue;
     }
 
-    const descriptor = createInstallDescriptor(binding.match.skill);
-    const sourceMetadata = sourceReferenceMetadata(sourceReferenceFromSkill(binding.match.skill));
-    const skillsShSource = binding.match.skill.provider === "skills-sh" ? parseSkillsShReference(descriptor.sourceId) : undefined;
-    const timestamp = new Date().toISOString();
-    const existing = item.manifestEntry;
-    const entry: ProvenanceEntry = {
-      name: item.name,
-      localPath: item.path,
-      provenance: "installed",
-      provider: binding.match.skill.provider,
-      sourceId: descriptor.sourceId,
-      sourceUrl: descriptor.sourceUrl ?? binding.match.skill.sourceUrl ?? binding.match.skill.githubUrl ?? binding.match.skill.installReference,
-      sourceOwner: skillsShSource?.owner ?? sourceMetadata.sourceOwner,
-      sourceRepository: skillsShSource?.repo ?? sourceMetadata.sourceRepository,
-      sourcePath: skillsShSource?.skill ?? sourceMetadata.sourcePath,
-      sourceType: binding.match.skill.provider === "skills-sh" ? "skills-sh" : undefined,
-      skillPath: skillsShSource?.skill,
-      sourceTransport: binding.match.skill.provider === "skills-sh" ? "api" : undefined,
-      installedAt: existing?.installedAt ?? timestamp,
-      updatedAt: timestamp,
-      fingerprint: item.fingerprint,
-    };
+    const entry = buildBindSourceEntry(item, binding.match.skill, item.fingerprint, item.manifestEntry?.installedAt);
     manifest = upsertManifestEntry(manifest, entry);
     appliedCount += 1;
   }
@@ -174,7 +139,7 @@ export async function applyInstallPlan(
   runner: CommandRunner,
   options: ApplyOptions,
 ): Promise<void> {
-  assertConfirmed(plan, options);
+  assertConfirmed(plan, options.confirmToken);
   const installReference = plan.confirmationToken;
   if (!installReference) {
     throw new SkillHubError("Install plan did not include an install reference confirmation token.");
@@ -238,7 +203,7 @@ export async function applyInstallPlan(
 }
 
 export function applyRemovePlan(plan: SafetyPlan, config: SkillHubConfig, options: ApplyOptions): void {
-  assertConfirmed(plan, options);
+  assertConfirmed(plan, options.confirmToken);
   const deleteTarget = plan.operations.find((operation) => operation.kind === "delete_directory")?.target;
   const manifestTarget = plan.operations.find((operation) => operation.kind === "write_manifest")?.target;
   if (!deleteTarget || !manifestTarget) {
@@ -254,7 +219,7 @@ export function applyRefreshPlan(plan: SafetyPlan, options: ApplyOptions): void 
   if (plan.action !== "refresh") {
     throw new SkillHubError(`Expected a refresh plan but received '${plan.action}'.`);
   }
-  assertConfirmed(plan, options);
+  assertConfirmed(plan, options.confirmToken);
   const staleManifestTargets = plan.operations
     .filter((operation) => operation.kind === "write_manifest")
     .map((operation) => operation.target);

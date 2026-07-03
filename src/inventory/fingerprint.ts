@@ -1,33 +1,13 @@
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import type { SkillFingerprint } from "../types.js";
 import { SkillHubError } from "../utils/errors.js";
-
-const EXCLUDED_DIRECTORIES = new Set([".git", "node_modules"]);
+import { walkSkillFiles } from "../utils/file-traversal.js";
 
 interface FingerprintFile {
   absolutePath: string;
   relativePath: string;
   size: number;
-}
-
-function collectFiles(root: string, current: string, files: FingerprintFile[]): void {
-  const entries = readdirSync(current, { withFileTypes: true });
-  for (const entry of entries) {
-    const absolutePath = join(current, entry.name);
-    if (entry.isDirectory()) {
-      if (!EXCLUDED_DIRECTORIES.has(entry.name)) {
-        collectFiles(root, absolutePath, files);
-      }
-      continue;
-    }
-
-    if (entry.isFile()) {
-      const stat = statSync(absolutePath);
-      files.push({ absolutePath, relativePath: relative(root, absolutePath).replace(/\\/g, "/"), size: stat.size });
-    }
-  }
 }
 
 export function computeSkillFingerprint(skillPath: string): SkillFingerprint {
@@ -40,8 +20,10 @@ export function computeSkillFingerprint(skillPath: string): SkillFingerprint {
     throw new SkillHubError(`Cannot fingerprint non-directory skill path: ${skillPath}`);
   }
 
-  const files: FingerprintFile[] = [];
-  collectFiles(skillPath, skillPath, files);
+  const files: FingerprintFile[] = walkSkillFiles(skillPath).map((entry) => ({
+    ...entry,
+    size: statSync(entry.absolutePath).size,
+  }));
   files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
 
   const hash = createHash("sha256");

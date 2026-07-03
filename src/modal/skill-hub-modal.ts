@@ -3,6 +3,7 @@ import { Key, matchesKey, truncateToWidth, type Component, type Focusable, type 
 import type { SkillHubConfig } from "../config/config.js";
 import type { InventorySnapshot } from "../types.js";
 import { sanitizeTerminalText } from "../utils/terminal-text.js";
+import { FocusableComponent } from "../ui/focusable-component.js";
 import { calculateSkillHubModalDimensions, distributeTitle } from "./modal-layout.js";
 import { createSkillHubPanes } from "./panes.js";
 import type { ModalActionItem, ModalPane, SkillHubModalAction, SkillHubModalContext } from "./modal-types.js";
@@ -33,19 +34,10 @@ function actionCount(pane: ModalPane): number {
   return pane.actions.length;
 }
 
-class SkillHubModal implements Component, Focusable {
+class SkillHubModal extends FocusableComponent {
   private readonly panes: readonly ModalPane[];
-  private focusedValue = false;
   private paneIndex = 0;
   private actionIndexes: number[];
-
-  public get focused(): boolean {
-    return this.focusedValue;
-  }
-
-  public set focused(value: boolean) {
-    this.focusedValue = value;
-  }
 
   public constructor(
     private readonly tui: TUI,
@@ -54,6 +46,7 @@ class SkillHubModal implements Component, Focusable {
     private readonly done: (action: SkillHubModalAction | undefined) => void,
     private readonly selectionState: SkillHubModalSelectionState = createSkillHubModalSelectionState(),
   ) {
+    super();
     this.panes = createSkillHubPanes(modal);
     const restoredPaneIndex = this.panes.findIndex((pane) => pane.id === this.selectionState.selectedPaneId);
     this.paneIndex = restoredPaneIndex >= 0 ? restoredPaneIndex : 0;

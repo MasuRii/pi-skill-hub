@@ -16,6 +16,7 @@ import { createProviders } from "../providers/index.js";
 import { createInstallDescriptor } from "../plans/install-descriptor.js";
 import { chooseSearchMode, normalizeQuery, searchAllProviders } from "../search/search.js";
 import { formatProviderErrorSummary } from "../ui/rendering.js";
+import { FocusableComponent } from "../ui/focusable-component.js";
 import { getErrorMessage } from "../utils/errors.js";
 import { sanitizeTerminalText } from "../utils/terminal-text.js";
 import { sourceIdentityKey } from "../utils/source-reference.js";
@@ -121,7 +122,7 @@ export function calculateBrowserListMaxVisible(options: BrowserListCapacityOptio
   return Math.max(1, visibleRows);
 }
 
-class SkillBrowserModal implements Component, Focusable {
+class SkillBrowserModal extends FocusableComponent {
   private readonly state: BrowserState;
   private readonly input = new Input();
   private readonly installedIndex: InstalledSkillIndex;
@@ -131,7 +132,6 @@ class SkillBrowserModal implements Component, Focusable {
   private error = "";
   private providerSources: ProviderSearchSummary[];
   private searchGeneration = 0;
-  private focusedValue = false;
   private viewMode: BrowserViewMode = "list";
   private selectedSkillKey = "";
   private readonly previewCache = new Map<string, PreviewCacheEntry>();
@@ -140,11 +140,7 @@ class SkillBrowserModal implements Component, Focusable {
   private previewScrollOffset = 0;
   private lastInnerWidth = 80;
 
-  public get focused(): boolean {
-    return this.focusedValue;
-  }
-
-  public set focused(value: boolean) {
+  public override set focused(value: boolean) {
     this.focusedValue = value;
     this.input.focused = value && this.viewMode === "list";
   }
@@ -156,6 +152,7 @@ class SkillBrowserModal implements Component, Focusable {
     private readonly done: (action: BrowserAction) => void,
     private readonly sessionState: SkillBrowserSessionState = createSkillBrowserSessionState(),
   ) {
+    super();
     this.state = sessionState.state;
     this.hasSearched = sessionState.hasSearched;
     this.providerSources = [...sessionState.providerSources];
@@ -164,7 +161,7 @@ class SkillBrowserModal implements Component, Focusable {
     this.markdownPreviewRenderer = new MarkdownPreviewRenderer(theme);
     this.input.setValue(this.state.query);
     this.input.onSubmit = (value) => {
-      void this.search(value);
+      void this.runSearch(value);
     };
     this.input.onEscape = () => this.done(null);
     this.list = this.createList(this.currentPageEntries());
@@ -267,7 +264,7 @@ class SkillBrowserModal implements Component, Focusable {
     this.persistSession();
   }
 
-  private async search(value: string): Promise<void> {
+  private async runSearch(value: string): Promise<void> {
     const requestId = this.searchGeneration + 1;
     this.searchGeneration = requestId;
     const query = normalizeQuery(value);
@@ -319,18 +316,19 @@ class SkillBrowserModal implements Component, Focusable {
     }
   }
 
-  private cycleSort(): void {
-    this.state.sortMode = cycleSortMode(this.state.sortMode);
+  private cycleFilter<T extends "sortMode" | "providerFilter">(field: T, cycler: (current: BrowserState[T]) => BrowserState[T]): void {
+    this.state[field] = cycler(this.state[field]);
     this.resetPage();
     this.refreshList();
     this.tui.requestRender();
   }
 
+  private cycleSort(): void {
+    this.cycleFilter("sortMode", cycleSortMode);
+  }
+
   private cycleProvider(): void {
-    this.state.providerFilter = cycleProviderFilter(this.state.providerFilter);
-    this.resetPage();
-    this.refreshList();
-    this.tui.requestRender();
+    this.cycleFilter("providerFilter", cycleProviderFilter);
   }
 
   private hasSelectableResults(): boolean {
@@ -545,13 +543,17 @@ class SkillBrowserModal implements Component, Focusable {
     };
   }
 
-  private scrollPreview(delta: number): void {
+  private previewScrollMetrics(): { bodyHeight: number; bodyLineCount: number } | undefined {
     const skill = this.currentPreviewSkill();
     if (!skill || !this.currentPreview()) {
-      return;
+      return undefined;
     }
-    const metrics = this.previewRows(skill, this.lastInnerWidth);
-    if (metrics.bodyHeight <= 0 || metrics.bodyLineCount <= metrics.bodyHeight) {
+    return this.previewRows(skill, this.lastInnerWidth);
+  }
+
+  private scrollPreview(delta: number): void {
+    const metrics = this.previewScrollMetrics();
+    if (!metrics || metrics.bodyHeight <= 0 || metrics.bodyLineCount <= metrics.bodyHeight) {
       return;
     }
     const nextOffset = this.previewScrollOffset + delta;
@@ -560,11 +562,10 @@ class SkillBrowserModal implements Component, Focusable {
   }
 
   private scrollPreviewTo(position: "start" | "end"): void {
-    const skill = this.currentPreviewSkill();
-    if (!skill || !this.currentPreview()) {
+    const metrics = this.previewScrollMetrics();
+    if (!metrics) {
       return;
     }
-    const metrics = this.previewRows(skill, this.lastInnerWidth);
     const nextOffset = position === "start" ? 0 : Math.max(0, metrics.bodyLineCount - metrics.bodyHeight);
     if (nextOffset === this.previewScrollOffset) {
       return;
@@ -700,7 +701,7 @@ class SkillBrowserModal implements Component, Focusable {
         this.tui.requestRender();
         return;
       }
-      void this.search(this.input.getValue());
+      void this.runSearch(this.input.getValue());
       return;
     }
     if (
