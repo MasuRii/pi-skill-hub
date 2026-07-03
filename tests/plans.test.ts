@@ -11,15 +11,13 @@ import { buildAdoptPlan, buildInstallPreviewPlan, buildRemovePreviewPlan, buildU
 import type { ProvenanceManifest, SkillSearchResult } from "../src/types.js";
 import { buildSkillsAddCommand } from "../src/commands/skills-command.js";
 import { isPathInside, normalizePathForKey, resolveSafeLocalSkillPath } from "../src/utils/path-utils.js";
-import { createSkill, fixtureConfig } from "./helpers.js";
+import { createFixtureRoots, createSkill, emptyManifest, fixtureConfig } from "./helpers.js";
 
 test("plans protect unknown and external skills from removal", () => {
-  const root = mkdtempSync(join(tmpdir(), "skill-hub-plan-protect-"));
-  const localRoot = join(root, "local");
-  const externalRoot = join(root, "external");
+  const { localRoot, externalRoot } = createFixtureRoots("plan-protect");
   createSkill(localRoot, "custom-skill");
   createSkill(externalRoot, "external-skill");
-  const inventory = collectInventory(fixtureConfig(localRoot, externalRoot), { version: 1, updatedAt: new Date().toISOString(), skills: {} });
+  const inventory = collectInventory(fixtureConfig(localRoot, externalRoot), emptyManifest());
 
   const unknownPlan = buildRemovePreviewPlan(inventory, "custom-skill");
   const externalPlan = buildRemovePreviewPlan(inventory, "external-skill");
@@ -30,9 +28,7 @@ test("plans protect unknown and external skills from removal", () => {
 });
 
 test("plans allow managed clean removal and unknown adoption previews", () => {
-  const root = mkdtempSync(join(tmpdir(), "skill-hub-plan-managed-"));
-  const localRoot = join(root, "local");
-  const externalRoot = join(root, "external");
+  const { localRoot, externalRoot } = createFixtureRoots("plan-managed");
   const managedPath = createSkill(localRoot, "managed-skill");
   createSkill(localRoot, "custom-skill");
   const manifest: ProvenanceManifest = {
@@ -60,9 +56,7 @@ test("plans allow managed clean removal and unknown adoption previews", () => {
 });
 
 test("install preview blocks overwriting existing local skill directories", () => {
-  const root = mkdtempSync(join(tmpdir(), "skill-hub-install-plan-"));
-  const localRoot = join(root, "local");
-  const externalRoot = join(root, "external");
+  const { localRoot, externalRoot } = createFixtureRoots("install");
   createSkill(localRoot, "existing-skill");
   const plan = buildInstallPreviewPlan(fixtureConfig(localRoot, externalRoot), "owner/repo@existing-skill");
   assert.equal(plan.canApply, false);
@@ -70,9 +64,7 @@ test("install preview blocks overwriting existing local skill directories", () =
 });
 
 test("install preview targets only direct local skill children for valid install identifiers", () => {
-  const root = mkdtempSync(join(tmpdir(), "skill-hub-install-valid-"));
-  const localRoot = join(root, "local");
-  const externalRoot = join(root, "external");
+  const { localRoot, externalRoot } = createFixtureRoots("install");
   const plan = buildInstallPreviewPlan(fixtureConfig(localRoot, externalRoot), "owner/repo@new-skill");
 
   assert.equal(plan.canApply, true);
@@ -81,9 +73,7 @@ test("install preview targets only direct local skill children for valid install
 });
 
 test("install preview canonicalizes skills.sh URLs and display names to installer-safe skill identifiers", () => {
-  const root = mkdtempSync(join(tmpdir(), "skill-hub-install-skills-sh-url-"));
-  const localRoot = join(root, "local");
-  const externalRoot = join(root, "external");
+  const { localRoot, externalRoot } = createFixtureRoots("install");
   const config = fixtureConfig(localRoot, externalRoot);
 
   const urlPlan = buildInstallPreviewPlan(config, "https://skills.sh/owner/repo/new-skill");
@@ -108,9 +98,7 @@ test("install preview canonicalizes skills.sh URLs and display names to installe
 });
 
 test("install preview blocks traversal and path-like skill names before target path construction", () => {
-  const root = mkdtempSync(join(tmpdir(), "skill-hub-install-traversal-"));
-  const localRoot = join(root, "local");
-  const externalRoot = join(root, "external");
+  const { localRoot, externalRoot } = createFixtureRoots("install");
   const config = fixtureConfig(localRoot, externalRoot);
   const unsafeIdentifiers = [
     "owner/repo@../../outside-skill",
@@ -132,9 +120,7 @@ test("install preview blocks traversal and path-like skill names before target p
 });
 
 test("install preview blocks unsafe skill names returned by providers", () => {
-  const root = mkdtempSync(join(tmpdir(), "skill-hub-install-provider-name-"));
-  const localRoot = join(root, "local");
-  const externalRoot = join(root, "external");
+  const { localRoot, externalRoot } = createFixtureRoots("install");
   const unsafeSkill: SkillSearchResult = {
     id: "owner/repo@../../outside-skill",
     name: "../../outside-skill",
@@ -152,9 +138,7 @@ test("install preview blocks unsafe skill names returned by providers", () => {
 });
 
 test("install preview separates provider id, local skill name, and install reference", () => {
-  const root = mkdtempSync(join(tmpdir(), "skill-hub-install-descriptor-"));
-  const localRoot = join(root, "local");
-  const externalRoot = join(root, "external");
+  const { localRoot, externalRoot } = createFixtureRoots("install");
   const sourceSkill: SkillSearchResult = {
     id: "skillsmp-remote-id",
     name: "friendly-local-name",
@@ -176,9 +160,7 @@ test("install preview separates provider id, local skill name, and install refer
 });
 
 test("apply install plan uses descriptor local name and does not overwrite existing directories", async () => {
-  const root = mkdtempSync(join(tmpdir(), "skill-hub-apply-install-descriptor-"));
-  const localRoot = join(root, "local");
-  const externalRoot = join(root, "external");
+  const { root, localRoot, externalRoot } = createFixtureRoots("apply");
   const manifestPath = join(root, "provenance.json");
   const config = fixtureConfig(localRoot, externalRoot);
   const sourceSkill: SkillSearchResult = {
@@ -216,9 +198,7 @@ test("apply install plan uses descriptor local name and does not overwrite exist
 
 
 test("apply install plan installs skills.sh content through the download API", async () => {
-  const root = mkdtempSync(join(tmpdir(), "skill-hub-apply-skills-sh-display-"));
-  const localRoot = join(root, "local");
-  const externalRoot = join(root, "external");
+  const { root, localRoot, externalRoot } = createFixtureRoots("apply");
   const manifestPath = join(root, "provenance.json");
   const config = fixtureConfig(localRoot, externalRoot);
   const sourceSkill: SkillSearchResult = {

@@ -31,6 +31,7 @@ import {
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { formatBrowserResultColumns } from "../src/browser/result-layout.js";
 import type { CommandRunnerResult, InventorySnapshot, SkillSearchResult } from "../src/types.js";
+import { sendInput as sendInputShared, themeFixture } from "./helpers.js";
 
 function skill(name: string, popularity: number, provider: "skills-sh" | "skillsmp", description = `${name} helper`): SkillSearchResult {
   return {
@@ -42,16 +43,6 @@ function skill(name: string, popularity: number, provider: "skills-sh" | "skills
     provider,
     sourceUrl: `https://example.test/${name}`,
   };
-}
-
-function themeFixture(): Theme {
-  return {
-    fg: (_color: string, text: string) => text,
-    bold: (text: string) => text,
-    italic: (text: string) => text,
-    underline: (text: string) => text,
-    strikethrough: (text: string) => text,
-  } as unknown as Theme;
 }
 
 function boldMarkerThemeFixture(): Theme {
@@ -121,6 +112,7 @@ function browserServices(
 ): BrowserServices {
   return {
     config: {
+      enabled: true,
       debug: false,
       localSkillRoot: "C:/tmp/pi-skill-hub/local",
       externalSkillRoots: [],
@@ -163,10 +155,7 @@ function createBrowserHarness(
 }
 
 function sendInput(component: Component & Focusable, data: string): void {
-  if (!component.handleInput) {
-    throw new Error("Browser component must expose a keyboard input handler.");
-  }
-  component.handleInput(data);
+  sendInputShared(component, data, "Browser component");
 }
 
 function typeSearch(component: Component & Focusable, query: string): void {

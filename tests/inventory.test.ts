@@ -1,17 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { collectInventory } from "../src/inventory/inventory.js";
 import { computeSkillFingerprint } from "../src/inventory/fingerprint.js";
 import type { ProvenanceManifest } from "../src/types.js";
-import { createSkill, fixtureConfig } from "./helpers.js";
+import { createFixtureRoots, createSkill, emptyManifest, fixtureConfig } from "./helpers.js";
 
 test("inventory classifies managed, unknown, and external skills", () => {
-  const root = mkdtempSync(join(tmpdir(), "skill-hub-inventory-"));
-  const localRoot = join(root, "local");
-  const externalRoot = join(root, "external");
+  const { localRoot, externalRoot } = createFixtureRoots("inventory");
   const managedPath = createSkill(localRoot, "managed-skill");
   createSkill(localRoot, "custom-skill");
   createSkill(externalRoot, "external-skill");
@@ -39,9 +36,7 @@ test("inventory classifies managed, unknown, and external skills", () => {
 });
 
 test("inventory detects fingerprint drift for adopted skills", () => {
-  const root = mkdtempSync(join(tmpdir(), "skill-hub-drift-"));
-  const localRoot = join(root, "local");
-  const externalRoot = join(root, "external");
+  const { localRoot, externalRoot } = createFixtureRoots("drift");
   const skillPath = createSkill(localRoot, "drift-skill");
   const fingerprint = computeSkillFingerprint(skillPath);
   writeFileSync(join(skillPath, "SKILL.md"), "# drift-skill\n\nChanged content\n", "utf-8");

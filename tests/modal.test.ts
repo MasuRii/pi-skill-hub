@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import {
   createSkillHubModal,
@@ -10,16 +9,7 @@ import {
 import type { InventorySnapshot } from "../src/types.js";
 import type { SkillHubModalAction } from "../src/modal/modal-types.js";
 import type { SkillHubConfig } from "../src/config/config.js";
-
-function themeFixture(): Theme {
-  return {
-    fg: (_color: string, text: string) => text,
-    bold: (text: string) => text,
-    italic: (text: string) => text,
-    underline: (text: string) => text,
-    strikethrough: (text: string) => text,
-  } as unknown as Theme;
-}
+import { sendInput as sendInputShared, themeFixture } from "./helpers.js";
 
 function tuiFixture(): TUI {
   return {
@@ -30,6 +20,7 @@ function tuiFixture(): TUI {
 
 function configFixture(): SkillHubConfig {
   return {
+    enabled: true,
     debug: false,
     localSkillRoot: "C:/tmp/pi-skill-hub/local",
     externalSkillRoots: [],
@@ -74,10 +65,7 @@ function createHarness(
 }
 
 function sendInput(component: Component & Focusable, data: string): void {
-  if (!component.handleInput) {
-    throw new Error("Modal component must expose an input handler.");
-  }
-  component.handleInput(data);
+  sendInputShared(component, data, "Modal component");
 }
 
 test("skill hub modal preserves selected pane and action across workspace reopen", () => {

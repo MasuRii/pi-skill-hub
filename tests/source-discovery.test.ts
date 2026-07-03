@@ -4,21 +4,17 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { collectInventory } from "../src/inventory/inventory.js";
-import { loadManifest } from "../src/manifest/manifest-store.js";
+import { loadManifest, emptyManifest } from "../src/manifest/manifest-store.js";
 import { applyBindSourcePlan, applyBulkBindSourcePlan } from "../src/plans/apply.js";
 import { buildBindSourcePlan, buildBulkBindSourcePlan } from "../src/plans/plans.js";
 import { buildManualSourceMatch, discoverBulkSourceBindings, discoverSourceMatches } from "../src/discovery/source-discovery.js";
-import type { ProvenanceManifest, SkillContentPreview, SkillSearchResult } from "../src/types.js";
+import type { SkillContentPreview, SkillSearchResult } from "../src/types.js";
 import { createSkill, fixtureConfig } from "./helpers.js";
 import type { SkillHubConfig } from "../src/config/config.js";
 
 function cliFixtureConfig(localRoot: string, externalRoot: string): SkillHubConfig {
   const config = fixtureConfig(localRoot, externalRoot);
   return { ...config, skillsSh: { ...config.skillsSh, transport: "cli", cliCompatibility: true } };
-}
-
-function emptyManifest(): ProvenanceManifest {
-  return { version: 1, updatedAt: new Date().toISOString(), skills: {} };
 }
 
 test("source discovery ranks provider candidates by local SKILL.md similarity", async () => {
