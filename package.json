@@ -1,6 +1,6 @@
 {
   "name": "pi-skill-hub",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "Safe provenance-aware Pi skill discovery, inventory, preview, and management hub.",
   "type": "module",
   "main": "./index.ts",
