@@ -1,11 +1,17 @@
+<div align="center">
+
 # pi-skill-hub
 
-[![npm version](https://img.shields.io/npm/v/pi-skill-hub?style=flat-square)](https://www.npmjs.com/package/pi-skill-hub) [![License](https://img.shields.io/github/license/MasuRii/pi-skill-hub?style=flat-square)](LICENSE)
+[![npm version](https://img.shields.io/npm/v/pi-skill-hub?style=for-the-badge)](https://www.npmjs.com/package/pi-skill-hub)
+[![License](https://img.shields.io/github/license/MasuRii/pi-skill-hub?style=for-the-badge)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=for-the-badge)]()
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Y8Y01PSSVR)
 
 <img width="1376" height="752" alt="image" src="https://github.com/user-attachments/assets/9f553d51-68d8-4a87-bbee-0b493f1d3923" />
-
-
 `pi-skill-hub` is a Pi extension for provenance-aware skill discovery, inventory, preview, and management. It keeps skill mutations preview-first so installs, adoptions, removals, and updates can be reviewed before they touch local files.
+
+</div>
 
 ## Capabilities
 
